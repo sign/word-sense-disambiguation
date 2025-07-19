@@ -19,16 +19,11 @@ export WORDNET_URL=http://127.0.0.1:8000
 uvicorn --reload wsd.server:app --port 8005 
 ```
 
-Or set it inline:
-```shell
-WORDNET_URL=http://127.0.0.1:8000 uvicorn --reload wsd.server:app --port 8005 
-```
-
 ### Running with Docker
 
 ```shell
 docker build -t wsd .
-docker run -p 8001:8000 -e WORDNET_URL=http://127.0.0.1:8000 wsd
+docker run -p 8005:8000 -e WORDNET_URL=http://127.0.0.1:8000 wsd
 ```
 
 ## Usage

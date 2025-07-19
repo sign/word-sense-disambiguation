@@ -16,7 +16,7 @@ def find_free_port():
 
 class ServerProcess:
     def __init__(self):
-        self.host = "0.0.0.0"
+        self.host = "localhost"
         self.port = find_free_port()
         self.process = None
 
