@@ -6,17 +6,29 @@ and have our own implementation for [word sense disambiguation](./wsd/word_sense
 
 We expose a [web server](./wsd/server.py) that can be used to disambiguate words in sentences.
 
+## Environment Variables
+
+The application requires the following environment variable:
+
+- `WORDNET_URL`: URL of the WordNet API server (default: `http://127.0.0.1:8000`)
+
 ### Running locally
 
 ```shell
+export WORDNET_URL=http://127.0.0.1:8000
 uvicorn --reload wsd.server:app --port 8005 
+```
+
+Or set it inline:
+```shell
+WORDNET_URL=http://127.0.0.1:8000 uvicorn --reload wsd.server:app --port 8005 
 ```
 
 ### Running with Docker
 
 ```shell
 docker build -t wsd .
-docker run -p 8000:8000 wsd
+docker run -p 8000:8000 -e WORDNET_URL=http://127.0.0.1:8000 wsd
 ```
 
 ## Usage

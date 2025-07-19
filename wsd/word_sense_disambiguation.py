@@ -6,6 +6,7 @@ import requests
 import spacy
 from colorama import Fore, Style, init
 
+from wsd.env import WORDNET_URL
 from wsd.masked_language_model import load_model, unmask_token
 
 
@@ -57,7 +58,7 @@ def get_spacy_pipeline(language: str = "en"):
 
 def get_definitions(word: str, pos: str, language: str = "en") -> list[tuple[str, str]]:
     """Fetch definitions for a word from the API"""
-    url = f"http://127.0.0.1:8000/lexicons/omw-{language}:1.4/words?form={word}&pos={pos}"
+    url = f"{WORDNET_URL}/lexicons/omw-{language}:1.4/words?form={word}&pos={pos}"
     try:
         response = requests.get(url)
         if response.status_code == 200:
@@ -332,7 +333,7 @@ def visualize_sentence(text: str, results: list[DisambiguatedToken]) -> None:
 
 # Example usage
 if __name__ == "__main__":
-    test_sentence = "The bass player adjusted the bass on his amplifier while fishing for bass."
+    test_sentence = "Apple is a technology company."
 
     results = disambiguate(test_sentence)
 

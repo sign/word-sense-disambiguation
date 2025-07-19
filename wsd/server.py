@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
+from wsd.env import WORDNET_URL
 from wsd.word_sense_disambiguation import disambiguate
 
 templates = Jinja2Templates(directory=os.path.dirname(__file__))
@@ -54,6 +55,7 @@ async def disambiguate_request(request: Request):
             "tokens": result.tokens,
             "entities": result.entities,
             "request": request,
+            "wordnet_url": WORDNET_URL,
         })
     else:
         return JSONResponse(_dataclasses_to_dict(result))

@@ -1,17 +1,10 @@
-import asyncio
-import json
+import socket
 import subprocess
 import time
-from contextlib import asynccontextmanager
+from contextlib import closing
 from urllib.parse import urlencode
 
 import pytest
-import uvicorn
-from starlette.testclient import TestClient
-
-from wsd.server import app
-import socket
-from contextlib import closing
 
 
 def find_free_port():
@@ -67,8 +60,9 @@ def test_e2e_index_endpoint(server):
 
 def test_e2e_health_endpoint(server):
     """Test health check endpoint"""
+    from datetime import UTC, datetime
+
     import requests
-    from datetime import datetime, UTC
 
     base_url = f"http://{server.host}:{server.port}"
 
@@ -119,21 +113,24 @@ def test_e2e_disambiguate_endpoint(server):
     assert len(result["tokens"]) > 0
     assert len(result["entities"]) > 0
 
-    # Validate first token exactly
-    expected_first_token = {
-        "word": "Apple",
-        "lemma": "apple", 
-        "pos": "PROPN",
-        "position": 0,
-        "start_char": 0,
-        "end_char": 5,
-        "synset_id": None,
-        "synset_definition": None,
-        "confidence": None
-    }
-    assert result["tokens"][0] == expected_first_token
+    # Validate last token "company" which should have synset information
+    company_token = result["tokens"][3].copy()
+    company_token.pop("confidence", None)  # Remove confidence for comparison
 
-    # Validate first entity exactly  
+    expected_company_token = {
+        'end_char': 21,
+        'lemma': 'technology',
+        'pos': 'NOUN',
+        'position': 3,
+        'start_char': 11,
+        'synset_definition': 'the discipline dealing with the art or science of '
+                             'applying scientific knowledge to practical problems',
+        'synset_id': 'omw-en-06125041-n',
+        'word': 'technology'
+    }
+    assert company_token == expected_company_token
+
+    # Validate first entity exactly
     expected_first_entity = {
         "id": 312,
         "start_token": 0,

@@ -25,7 +25,7 @@
                 {% for token in tokens %}
                 <td class="definition-cell">
                     {% if token.synset_definition and token.synset_id %}
-                    <a href="http://127.0.0.1:8000/lexicons/omw-en:1.4/synsets/{{ token.synset_id }}" target="_blank">{{ token.synset_definition }}</a>
+                    <a href="{{ wordnet_url }}/lexicons/omw-en:1.4/synsets/{{ token.synset_id }}" target="_blank">{{ token.synset_definition }}</a>
                     {% else %}
                     -
                     {% endif %}
