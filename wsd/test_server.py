@@ -14,6 +14,17 @@ def find_free_port():
         return s.getsockname()[1]
 
 
+def wait_for_port(host, port, timeout=10):
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return True
+        except (ConnectionRefusedError, OSError):
+            time.sleep(0.1)
+    return False
+
+
 class ServerProcess:
     def __init__(self):
         self.host = "localhost"
@@ -26,9 +37,14 @@ class ServerProcess:
             "--host", self.host,
             "--port", str(self.port),
             "--log-level", "warning"
-        ])
-        # Wait for server to start
-        time.sleep(2)
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        if not wait_for_port(self.host, self.port, timeout=10):
+            stdout, stderr = self.process.communicate(timeout=2)
+            print(f"[server stdout]\n{stdout.decode()}")
+            print(f"[server stderr]\n{stderr.decode()}")
+            self.process.kill()
+            raise RuntimeError(f"Server failed to start on {self.host}:{self.port}")
 
     def stop(self):
         if self.process:
