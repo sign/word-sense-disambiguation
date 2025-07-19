@@ -100,6 +100,7 @@ def create_multiple_choice_prompt(word: str, mask_token: str, marked_sentence: s
     # Add "none of the above" option using next sequential letter
     none_letter = chr(ord('A') + len(definitions))
     choices.append(f"- {none_letter}: none of the above")
+    choices_lines = "\n".join(choices)
     return f"""Disambiguate the meaning of the highlighted word based on its usage in the sentence.
 Choose the most appropriate sense from the list.
 
@@ -110,7 +111,7 @@ Question:
 Which sense best matches the meaning of the highlighted word (*{word}*) as used in this sentence?
 
 Choices:
-{"\n".join(choices)}
+{choices_lines}
 
 Answer: [unused0] {mask_token}"""
 

@@ -20,6 +20,9 @@ RUN pip install --no-cache-dir -e ".[web]"
 # Copy application code
 COPY wsd/ ./wsd/
 
+# Prime the dependency cache
+RUN python -m wsd.prime
+
 # Expose the port the app runs on
 EXPOSE 8000
 
