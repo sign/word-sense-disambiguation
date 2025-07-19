@@ -1,0 +1,56 @@
+[project]
+name = "wsd"
+description = "Packages for understaning word senses and entities from text (word sense disambiguation & entity linking)"
+version = "0.0.1"
+authors = [
+    { name = "Amit Moryossef", email = "amit@sign.mt" },
+]
+readme = "README.md"
+dependencies = [
+    "transformers",
+    "tqdm",
+    "spacy",
+    "spacy-entity-linker",
+    "en_core_web_trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl",
+    "colorama"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff"
+]
+
+web = [
+    "uvicorn",
+    "starlette"
+]
+
+[tool.setuptools]
+packages = [
+    "wsd",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E", # pycodestyle errors
+    "W", # pycodestyle warnings
+    "F", # pyflakes
+    "C90", # mccabe complexity
+    "I", # isort
+    "N", # pep8-naming
+    "UP", # pyupgrade
+    "B", # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "PT", # flake8-pytest-style
+    "W605", # invalid escape sequence
+    "BLE", # flake8-blind-except
+    "TRY", # tryceratops
+]
+
+[tool.pytest.ini_options]
+addopts = "-v"
+testpaths = ["wsd"]

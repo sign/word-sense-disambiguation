@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Word Sense Disambiguation Results</title>
+    <style>
+        table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: center; vertical-align: top; }
+        .word-cell { font-weight: bold; }
+        .definition-cell { }
+        .entity-cell { background-color: #e8f4fd; font-weight: bold; }
+        a { color: #0066cc; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h2>Word Sense Disambiguation Results</h2>
+    <table>
+        <tbody>
+            <tr>
+                {% for token in tokens %}
+                <td class="word-cell" title="{{ token.lemma }} ({{ token.pos }})">{{ token.word }}</td>
+                {% endfor %}
+            </tr>
+            <tr>
+                {% for token in tokens %}
+                <td class="definition-cell">
+                    {% if token.synset_definition and token.synset_id %}
+                    <a href="http://127.0.0.1:8000/lexicons/omw-en:1.4/synsets/{{ token.synset_id }}" target="_blank">{{ token.synset_definition }}</a>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                {% endfor %}
+            </tr>
+            <tr>
+                {% set token_index = namespace(value=0) %}
+                {% for token in tokens %}
+                    {% set found_entity = false %}
+                    {% for entity in entities %}
+                        {% if entity.start_token == token_index.value and not found_entity %}
+                            {% set found_entity = true %}
+                            <td class="entity-cell" colspan="{{ entity.end_token - entity.start_token + 1 }}" 
+                                title="{{ entity.description or '' }}">
+                                <a href="{{ entity.url or '#' }}" target="_blank">{{ entity.text }}</a>
+                            </td>
+                            {% set token_index.value = entity.end_token + 1 %}
+                        {% endif %}
+                    {% endfor %}
+                    {% if not found_entity and token_index.value == loop.index0 %}
+                        <td>-</td>
+                        {% set token_index.value = token_index.value + 1 %}
+                    {% endif %}
+                {% endfor %}
+            </tr>
+        </tbody>
+    </table>
+</body>
+</html>
