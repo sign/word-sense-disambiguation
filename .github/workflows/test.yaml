@@ -26,4 +26,4 @@ jobs:
       - name: Test Code
         run: pytest .
         env:
-          WORDNET_URL: http://127.0.0.1:8000
+          WORDNET_URL: ${{ vars.WORDNET_URL }}

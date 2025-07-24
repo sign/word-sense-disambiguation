@@ -7,6 +7,11 @@ from urllib.parse import urlencode
 import pytest
 
 
+class ServerStartError(RuntimeError):
+    def __init__(self, host, port):
+        super().__init__(f"Failed to start the server on {host}:{port}.")
+
+
 def find_free_port():
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
         s.bind(('', 0))
@@ -44,7 +49,7 @@ class ServerProcess:
             print(f"[server stdout]\n{stdout.decode()}")
             print(f"[server stderr]\n{stderr.decode()}")
             self.process.kill()
-            raise RuntimeError(f"Server failed to start on {self.host}:{self.port}")
+            raise ServerStartError(host=self.host, port=self.port)
 
     def stop(self):
         if self.process:
