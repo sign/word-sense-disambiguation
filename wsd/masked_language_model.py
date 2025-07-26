@@ -1,3 +1,4 @@
+import importlib.util
 from functools import cache
 
 import torch
@@ -25,9 +26,13 @@ def load_model(model_name: str = "answerdotai/ModernBERT-Large-Instruct"):
     attn_implementation = None
     if device == 'cuda':
         try:
-            import flash_attn_interface
+            has_flash_attention = importlib.util.find_spec("flash_attn") is not None
+        except (ModuleNotFoundError, ValueError):
+            has_flash_attention = False
+
+        if has_flash_attention:
             attn_implementation = "flash_attention_2"
-        except ImportError:
+        else:
             print("FlashAttention not available, using standard attention for CUDA.")
 
     model = AutoModelForMaskedLM.from_pretrained(model_name, attn_implementation=attn_implementation)
