@@ -22,13 +22,18 @@ def load_model(model_name: str = "answerdotai/ModernBERT-Large-Instruct"):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     # Load model with appropriate optimizations
+    attn_implementation = None
     if device == 'cuda':
-        model = AutoModelForMaskedLM.from_pretrained(model_name, attn_implementation="flash_attention_2")
-    else:
-        # For MPS and CPU, use standard attention
-        model = AutoModelForMaskedLM.from_pretrained(model_name)
+        try:
+            import flash_attn_interface
+            attn_implementation = "flash_attention_2"
+        except ImportError:
+            print("FlashAttention not available, using standard attention for CUDA.")
+
+    model = AutoModelForMaskedLM.from_pretrained(model_name, attn_implementation=attn_implementation)
 
     model.to(device)
+    model.eval()
     print(f"Model loaded on device: {device}")
     return model, tokenizer, device
 
@@ -42,7 +47,8 @@ def unmask_token(text: str):
     if len(mask_idx) == 0:
         raise PromptMaskError()
 
-    outputs = model(**inputs)
+    with torch.no_grad():
+        outputs = model(**inputs)
 
     logits = outputs.logits[0, mask_idx[0, 1]]
     probs = torch.softmax(logits, dim=-1)

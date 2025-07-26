@@ -71,7 +71,7 @@ async def health_check_request(request: Request):
     body = {
         'status': 'healthy',
         'timestamp': datetime.now(tz=UTC).isoformat(),
-        'service': 'wn.web',
+        'service': 'wsd.server',
     }
     return JSONResponse(body, status_code=200)
 

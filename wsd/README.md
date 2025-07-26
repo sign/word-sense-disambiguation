@@ -14,7 +14,9 @@ If this needs to be done in production, a word-vector search approach would be m
 - [ ] For every definition, also include hypernym and other forms for the same synset
 - [ ] Automatically search for a better prompt over a smaller benchmark dataset
 - [ ] Use the benchmark dataset as a training dataset, and fine tune the model (with shuffled definitions).
+- [ ] Use https://huggingface.co/swap-uniba/LLM-wsd-FT-ALL to generate training data
 - [ ] Also search for noun phrases like "bus driver" or "bass player" and disambiguate the whole phrase
+- [ ] Batch processing of words within a sentence to improve performance
 
 ## Example
 
