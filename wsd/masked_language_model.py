@@ -1,5 +1,7 @@
 import time
+from dataclasses import dataclass
 from functools import cache
+from typing import Any
 
 import torch
 from transformers import AutoModelForMaskedLM, AutoTokenizer
@@ -9,8 +11,23 @@ class PromptMaskError(ValueError):
     def __init__(self):
         super().__init__("No mask token found for prompt")
 
+
+@dataclass
+class ModelComponents:
+    """Components returned by load_model"""
+    model: Any
+    tokenizer: Any
+    device: str
+
+
+@dataclass
+class UnmaskResult:
+    """Result of unmasking a single token"""
+    token: str
+    probabilities: torch.Tensor
+
 @cache
-def load_model(model_name: str = "answerdotai/ModernBERT-Large-Instruct"):
+def load_model(model_name: str = "answerdotai/ModernBERT-Large-Instruct") -> ModelComponents:
     if torch.cuda.is_available():
         device = "cuda"
     elif torch.backends.mps.is_available():
@@ -23,33 +40,34 @@ def load_model(model_name: str = "answerdotai/ModernBERT-Large-Instruct"):
     model = AutoModelForMaskedLM.from_pretrained(
         model_name,
         device_map=device,
-        dtype=torch.float16 if device == "cuda" else None,
+        torch_dtype=torch.float16 if device == "cuda" else None,
     )
     model.eval()
     print(f"Model loaded on device: {model.device}")
-    return model, tokenizer, device
+    return ModelComponents(model=model, tokenizer=tokenizer, device=device)
 
 
-def unmask_token(text: str):
-    model, tokenizer, device = load_model()
+def unmask_token(text: str) -> UnmaskResult:
+    components = load_model()
 
-    inputs = tokenizer(text, return_tensors="pt").to(device)
-    mask_idx = (inputs.input_ids == tokenizer.mask_token_id).nonzero()
+    inputs = components.tokenizer(text, return_tensors="pt").to(components.device)
+    mask_idx = (inputs.input_ids == components.tokenizer.mask_token_id).nonzero()
 
     if len(mask_idx) == 0:
         raise PromptMaskError()
 
     with torch.no_grad():
-        outputs = model(**inputs)
+        outputs = components.model(**inputs)
 
     logits = outputs.logits[0, mask_idx[0, 1]]
     probs = torch.softmax(logits, dim=-1)
     token_id = torch.argmax(probs).item()
 
-    return tokenizer.decode(token_id).strip(), probs
+    decoded_token = components.tokenizer.decode(token_id).strip()
+    return UnmaskResult(token=decoded_token, probabilities=probs)
 
 
-def unmask_token_batch(texts: list[str]) -> list[tuple[str, torch.Tensor]]:
+def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     """
     Batch version of unmask_token that processes multiple texts in parallel.
 
@@ -57,27 +75,27 @@ def unmask_token_batch(texts: list[str]) -> list[tuple[str, torch.Tensor]]:
         texts: List of strings, each containing a mask token
 
     Returns:
-        List of tuples (decoded_token, probs) for each input text
+        List of UnmaskResult objects for each input text
 
     Raises:
         PromptMaskError: If any text doesn't contain a mask token
     """
-    model, tokenizer, device = load_model()
+    components = load_model()
 
     # Tokenize all texts with padding
-    inputs = tokenizer(texts, return_tensors="pt", padding=True).to(device)
+    inputs = components.tokenizer(texts, return_tensors="pt", padding=True).to(components.device)
 
     # Find mask token positions for each example in the batch
     mask_positions = []
     for i in range(len(texts)):
-        mask_idx = (inputs.input_ids[i] == tokenizer.mask_token_id).nonzero()
+        mask_idx = (inputs.input_ids[i] == components.tokenizer.mask_token_id).nonzero()
         if len(mask_idx) == 0:
             raise PromptMaskError()
         mask_positions.append((i, mask_idx[0, 0].item()))
 
     # Run batched forward pass
     with torch.no_grad():
-        outputs = model(**inputs)
+        outputs = components.model(**inputs)
 
     # Extract predictions for each mask token
     results = []
@@ -85,23 +103,23 @@ def unmask_token_batch(texts: list[str]) -> list[tuple[str, torch.Tensor]]:
         logits = outputs.logits[batch_idx, seq_idx]
         probs = torch.softmax(logits, dim=-1)
         token_id = torch.argmax(probs).item()
-        decoded_token = tokenizer.decode(token_id).strip()
-        results.append((decoded_token, probs))
+        decoded_token = components.tokenizer.decode(token_id).strip()
+        results.append(UnmaskResult(token=decoded_token, probabilities=probs))
 
     return results
 
 
 def main():
-    _, tokenizer, _ = load_model()
-    text = f"Answer 'Yes' or 'No'.\nQUESTION: Is Paris the capital of France?\nANSWER: [unused0] {tokenizer.mask_token}"
+    components = load_model()
+    text = f"Answer 'Yes' or 'No'.\nQUESTION: Is Paris the capital of France?\nANSWER: [unused0] {components.tokenizer.mask_token}"
 
     # Single example
     start_time = time.time()
-    token, probs = unmask_token(text)
+    result = unmask_token(text)
     single_time = time.time() - start_time
 
     print(text)
-    print(f"Answer: {token}")
+    print(f"Answer: {result.token}")
     print(f"Time: {single_time:.4f}s")
 
     # Create test texts with different batch sizes
@@ -125,7 +143,7 @@ def main():
     print("="*60)
     start_time = time.time()
     for text_input in texts:
-        token, _ = unmask_token(text_input)
+        _ = unmask_token(text_input)
     sequential_time = time.time() - start_time
     print(f"Total time: {sequential_time:.4f}s")
     print(f"Average per example: {sequential_time/len(texts):.4f}s")
@@ -138,11 +156,11 @@ def main():
     results = unmask_token_batch(texts)
     batch_time = time.time() - start_time
 
-    for i, (text_input, (predicted_token, _)) in enumerate(zip(texts, results)):
+    for i, (text_input, result) in enumerate(zip(texts, results)):
         # Extract the question from the text
         question_line = text_input.split('\n')[1]
         print(f"\n{i+1}. {question_line}")
-        print(f"   Answer: {predicted_token}")
+        print(f"   Answer: {result.token}")
 
     print(f"\nTotal time: {batch_time:.4f}s")
     print(f"Average per example: {batch_time/len(texts):.4f}s")
@@ -165,7 +183,7 @@ def main():
     # Sequential
     start_time = time.time()
     for text_input in texts_8:
-        token, _ = unmask_token(text_input)
+        _ = unmask_token(text_input)
     sequential_time_8 = time.time() - start_time
 
     # Batched

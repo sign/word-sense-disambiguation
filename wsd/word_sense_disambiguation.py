@@ -42,6 +42,29 @@ class Entity:
 
 
 @dataclass
+class Definition:
+    """A single word definition from WordNet"""
+    synset_id: str
+    definition: str
+
+
+@dataclass
+class DisambiguationResult:
+    """Result of word sense disambiguation"""
+    synset_id: str
+    definition: str
+    confidence: float
+
+
+@dataclass
+class DisambiguationInput:
+    """Input for batch disambiguation"""
+    word: str
+    marked_sentence: str
+    definitions: list[Definition]
+
+
+@dataclass
 class WordSenseDisambiguation:
     tokens: list[DisambiguatedToken]
     entities: list[Entity]
@@ -63,7 +86,7 @@ def get_spacy_pipeline(language: str = "en"):
     raise ValueError(msg)
 
 
-def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list[tuple[str, str]]]:
+def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
     """
     Fetch definitions for multiple words using the batch endpoint.
 
@@ -73,7 +96,7 @@ def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list
 
     Returns:
         List of definition lists, one per query (in same order as input).
-        Each definition list contains (synset_id, definition) tuples.
+        Each definition list contains Definition objects.
     """
     if not queries:
         return []
@@ -100,8 +123,8 @@ def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list
             # Sort definitions by synset_id for consistent ordering
             definitions_dict = item.get("definitions", {})
             for synset_id in sorted(definitions_dict.keys()):
-                definition = definitions_dict[synset_id]
-                definitions.append((synset_id, definition))
+                definition_text = definitions_dict[synset_id]
+                definitions.append(Definition(synset_id=synset_id, definition=definition_text))
             results.append(definitions)
 
             # Debug: print first few examples
@@ -124,7 +147,7 @@ def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list
         return results
 
 
-def get_definitions_single(word: str, pos: str, language: str = "en") -> list[tuple[str, str]]:
+def get_definitions_single(word: str, pos: str, language: str = "en") -> list[Definition]:
     """
     Convenience function to fetch definitions for a single word.
 
@@ -134,7 +157,7 @@ def get_definitions_single(word: str, pos: str, language: str = "en") -> list[tu
         language: Language code (default: "en")
 
     Returns:
-        List of (synset_id, definition) tuples for the word
+        List of Definition objects for the word
     """
     query = WordQuery(form=word, pos=pos)
     results = get_definitions([query], language)
@@ -154,12 +177,12 @@ def create_marked_sentence(doc, target_position: int) -> str:
 
 
 def create_multiple_choice_prompt(word: str, mask_token: str, marked_sentence: str,
-                                  definitions: list[tuple[str, str]]) -> str:
+                                  definitions: list[Definition]) -> str:
     """Create multiple choice prompt for word sense disambiguation"""
     choices = []
-    for i, (_, definition) in enumerate(definitions):
+    for i, definition_obj in enumerate(definitions):
         letter = chr(ord('A') + i)
-        choices.append(f"- {letter}: {definition}")
+        choices.append(f"- {letter}: {definition_obj.definition}")
 
     # Add "none of the above" option using next sequential letter
     none_letter = chr(ord('A') + len(definitions))
@@ -180,7 +203,7 @@ Choices:
 Answer: [unused0] {mask_token}"""
 
 
-def get_choice_probabilities(tokenizer, probs, definitions: list[tuple[str, str]]) -> list[float]:
+def get_choice_probabilities(tokenizer, probs, definitions: list[Definition]) -> list[float]:
     """Get probabilities for all choice letters including 'none of the above'"""
     choice_probs = []
 
@@ -215,21 +238,25 @@ def get_choice_probabilities(tokenizer, probs, definitions: list[tuple[str, str]
     return choice_probs
 
 
-def disambiguate_word(word: str, marked_sentence: str, definitions: list[tuple[str, str]]) -> tuple[str, str, float]:
+def disambiguate_word(word: str, marked_sentence: str, definitions: list[Definition]) -> DisambiguationResult:
     """Use ModernBERT to disambiguate word sense given context and definitions"""
     if not definitions:
-        return "No definitions found", "", 0.0
+        return DisambiguationResult(
+            synset_id="No definitions found",
+            definition="",
+            confidence=0.0
+        )
 
-    model, tokenizer, device = load_model()
+    components = load_model()
 
     # Create multiple choice prompt
-    text = create_multiple_choice_prompt(word, tokenizer.mask_token, marked_sentence, definitions)
+    text = create_multiple_choice_prompt(word, components.tokenizer.mask_token, marked_sentence, definitions)
 
     # Get prediction
-    predicted_token, probs = unmask_token(text)
+    result = unmask_token(text)
 
     # Get probabilities for all choices
-    choice_probs = get_choice_probabilities(tokenizer, probs, definitions)
+    choice_probs = get_choice_probabilities(components.tokenizer, result.probabilities, definitions)
 
     # Find best choice and normalize
     best_choice_idx = choice_probs.index(max(choice_probs))
@@ -238,44 +265,61 @@ def disambiguate_word(word: str, marked_sentence: str, definitions: list[tuple[s
 
     # Handle "none of the above" case
     if best_choice_idx == len(definitions):  # Next letter option selected
-        return "", "none of the above", normalized_score
+        return DisambiguationResult(
+            synset_id="",
+            definition="none of the above",
+            confidence=normalized_score
+        )
     else:
-        best_synset, best_definition = definitions[best_choice_idx]
-        return best_synset, best_definition, normalized_score
+        best_definition = definitions[best_choice_idx]
+        return DisambiguationResult(
+            synset_id=best_definition.synset_id,
+            definition=best_definition.definition,
+            confidence=normalized_score
+        )
 
 
 def disambiguate_word_batch(
-    batch_data: list[tuple[str, str, list[tuple[str, str]]]]
-) -> list[tuple[str, str, float]]:
+    batch_data: list[DisambiguationInput]
+) -> list[DisambiguationResult]:
     """
     Batch version of disambiguate_word that processes multiple words in parallel.
 
     Args:
-        batch_data: List of tuples, each containing:
-            - word: The word to disambiguate
-            - marked_sentence: Sentence with the word marked
-            - definitions: List of (synset_id, definition) tuples
+        batch_data: List of DisambiguationInput objects
 
     Returns:
-        List of tuples (synset_id, definition, confidence) for each input
+        List of DisambiguationResult objects for each input
     """
     if not batch_data:
         return []
 
-    model, tokenizer, device = load_model()
+    components = load_model()
 
     # Prepare prompts and track which ones are valid
     prompts = []
     valid_indices = []  # Track which inputs have definitions
-    for i, (word, marked_sentence, definitions) in enumerate(batch_data):
-        if definitions:
-            text = create_multiple_choice_prompt(word, tokenizer.mask_token, marked_sentence, definitions)
+    for i, input_obj in enumerate(batch_data):
+        if input_obj.definitions:
+            text = create_multiple_choice_prompt(
+                input_obj.word,
+                components.tokenizer.mask_token,
+                input_obj.marked_sentence,
+                input_obj.definitions
+            )
             prompts.append(text)
             valid_indices.append(i)
 
     # If no valid prompts, return empty results for all
     if not prompts:
-        return [("No definitions found", "", 0.0) for _ in batch_data]
+        return [
+            DisambiguationResult(
+                synset_id="No definitions found",
+                definition="",
+                confidence=0.0
+            )
+            for _ in batch_data
+        ]
 
     # Get predictions for all prompts in batch
     batch_results = unmask_token_batch(prompts)
@@ -283,17 +327,27 @@ def disambiguate_word_batch(
     # Process results
     results = []
     result_idx = 0
-    for i, (_word, _marked_sentence, definitions) in enumerate(batch_data):
+    for i, input_obj in enumerate(batch_data):
         if i not in valid_indices:
             # No definitions for this word
-            results.append(("No definitions found", "", 0.0))
+            results.append(
+                DisambiguationResult(
+                    synset_id="No definitions found",
+                    definition="",
+                    confidence=0.0
+                )
+            )
         else:
             # Process the prediction for this word
-            _, probs = batch_results[result_idx]
+            unmask_result = batch_results[result_idx]
             result_idx += 1
 
             # Get probabilities for all choices
-            choice_probs = get_choice_probabilities(tokenizer, probs, definitions)
+            choice_probs = get_choice_probabilities(
+                components.tokenizer,
+                unmask_result.probabilities,
+                input_obj.definitions
+            )
 
             # Find best choice and normalize
             best_choice_idx = choice_probs.index(max(choice_probs))
@@ -301,11 +355,23 @@ def disambiguate_word_batch(
             normalized_score = choice_probs[best_choice_idx] / total_prob if total_prob > 0 else 0.0
 
             # Handle "none of the above" case
-            if best_choice_idx == len(definitions):  # Next letter option selected
-                results.append(("", "none of the above", normalized_score))
+            if best_choice_idx == len(input_obj.definitions):  # Next letter option selected
+                results.append(
+                    DisambiguationResult(
+                        synset_id="",
+                        definition="none of the above",
+                        confidence=normalized_score
+                    )
+                )
             else:
-                best_synset, best_definition = definitions[best_choice_idx]
-                results.append((best_synset, best_definition, normalized_score))
+                best_definition = input_obj.definitions[best_choice_idx]
+                results.append(
+                    DisambiguationResult(
+                        synset_id=best_definition.synset_id,
+                        definition=best_definition.definition,
+                        confidence=normalized_score
+                    )
+                )
 
     return results
 
@@ -350,7 +416,13 @@ def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
         for idx, definitions in zip(content_word_indices, all_definitions):
             if definitions:
                 marked_sentence = create_marked_sentence(doc, idx)
-                batch_data.append((tokens[idx].word, marked_sentence, definitions))
+                batch_data.append(
+                    DisambiguationInput(
+                        word=tokens[idx].word,
+                        marked_sentence=marked_sentence,
+                        definitions=definitions
+                    )
+                )
                 valid_indices.append(idx)
 
         # Batch disambiguate all content words with definitions
@@ -358,16 +430,16 @@ def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
             predictions = disambiguate_word_batch(batch_data)
 
             # Update tokens with disambiguation results
-            for token_idx, (synset_id, best_def, confidence) in zip(valid_indices, predictions):
+            for token_idx, result in zip(valid_indices, predictions):
                 # Handle "none of the above" case
-                if best_def == "none of the above":
+                if result.definition == "none of the above":
                     tokens[token_idx].synset_id = None
                     tokens[token_idx].synset_definition = None
-                    tokens[token_idx].confidence = confidence
+                    tokens[token_idx].confidence = result.confidence
                 else:
-                    tokens[token_idx].synset_id = synset_id
-                    tokens[token_idx].synset_definition = best_def
-                    tokens[token_idx].confidence = confidence
+                    tokens[token_idx].synset_id = result.synset_id
+                    tokens[token_idx].synset_definition = result.definition
+                    tokens[token_idx].confidence = result.confidence
 
     # Extract linked entities using entityLinker
     if hasattr(doc._, 'linkedEntities'):

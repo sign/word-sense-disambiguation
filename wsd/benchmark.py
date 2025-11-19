@@ -5,7 +5,12 @@ from dataclasses import dataclass
 import wn
 from tqdm import tqdm
 
-from wsd.word_sense_disambiguation import WordQuery, get_definitions, disambiguate_word_batch
+from wsd.word_sense_disambiguation import (
+    WordQuery,
+    DisambiguationInput,
+    get_definitions,
+    disambiguate_word_batch,
+)
 
 
 @dataclass
@@ -71,17 +76,20 @@ if __name__ == "__main__":
 
             # Prepare batch data with fetched definitions
             batch_data = [
-                (example.word_form, example.marked_text, definitions)
+                DisambiguationInput(
+                    word=example.word_form,
+                    marked_sentence=example.marked_text,
+                    definitions=definitions
+                )
                 for example, definitions in zip(batch, all_definitions)
             ]
 
             # Process entire batch at once
             predictions = disambiguate_word_batch(batch_data)
-            # predictions = [("", "", "")] * len(batch)  # Placeholder for actual predictions
 
             # Check predictions and update accuracy
-            for i, (example, (predicted_synset_id, predicted_definition, _)) in enumerate(zip(batch, predictions)):
-                is_correct = predicted_synset_id == example.synset_id
+            for i, (example, result) in enumerate(zip(batch, predictions)):
+                is_correct = result.synset_id == example.synset_id
                 if is_correct:
                     correct += 1
 
@@ -90,7 +98,7 @@ if __name__ == "__main__":
                     print(f"\nDEBUG Mismatch #{start_idx + i}:")
                     print(f"  Word: {example.word_form} (lemma: {example.lemma}, pos: {example.pos})")
                     print(f"  Expected: {example.synset_id}")
-                    print(f"  Predicted: {predicted_synset_id} ({predicted_definition})")
+                    print(f"  Predicted: {result.synset_id} ({result.definition})")
                     print(f"  Sentence: {example.marked_text}")
 
             # Update progress bar
