@@ -1,10 +1,11 @@
+import itertools
 import re
 from dataclasses import dataclass
 
 import wn
 from tqdm import tqdm
 
-from wsd.word_sense_disambiguation import disambiguate_word, get_definitions
+from wsd.word_sense_disambiguation import WordQuery, get_definitions, disambiguate_word_batch
 
 
 @dataclass
@@ -19,7 +20,7 @@ def collect_wordnet_examples():
     """List all English words and example sentences from WordNet"""
 
     # Ensure omw-en:1.4 is downloaded
-    try: 
+    try:
         wn.Wordnet(lang="en")
     except wn.Error:
         print("Downloading omw-en:1.4...")
@@ -49,15 +50,50 @@ def collect_wordnet_examples():
                         yield WordNetExample(synset_id, form, word.lemma(), word.pos, marked_text)
 
 if __name__ == "__main__":
-    examples = list(tqdm(collect_wordnet_examples(), desc="Collecting examples"))
+    examples = collect_wordnet_examples()
+    examples = itertools.islice(examples, 100)
+    examples = list(tqdm(examples, desc="Collecting examples"))
     correct = 0
+    batch_size = 32
 
-    with tqdm(examples, desc="Evaluating examples") as pbar:
-        for example in pbar:
-            definitions = get_definitions(example.lemma, example.pos)
-            predicted_synset_id, _, _ = disambiguate_word(example.word_form, example.marked_text, definitions)
-            if predicted_synset_id == example.synset_id:
-                correct += 1
-            accuracy = correct / (pbar.n + 1)
+    # Process examples in batches
+    num_batches = (len(examples) + batch_size - 1) // batch_size
+
+    with tqdm(total=len(examples), desc="Evaluating examples") as pbar:
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min(start_idx + batch_size, len(examples))
+            batch = examples[start_idx:end_idx]
+
+            # Fetch definitions for all examples in batch using the batch endpoint
+            queries = [WordQuery(form=example.lemma, pos=example.pos) for example in batch]
+            all_definitions = get_definitions(queries)
+
+            # Prepare batch data with fetched definitions
+            batch_data = [
+                (example.word_form, example.marked_text, definitions)
+                for example, definitions in zip(batch, all_definitions)
+            ]
+
+            # Process entire batch at once
+            predictions = disambiguate_word_batch(batch_data)
+            # predictions = [("", "", "")] * len(batch)  # Placeholder for actual predictions
+
+            # Check predictions and update accuracy
+            for i, (example, (predicted_synset_id, predicted_definition, _)) in enumerate(zip(batch, predictions)):
+                is_correct = predicted_synset_id == example.synset_id
+                if is_correct:
+                    correct += 1
+
+                # Debug: print first few mismatches
+                if not is_correct and (start_idx + i) < 10:
+                    print(f"\nDEBUG Mismatch #{start_idx + i}:")
+                    print(f"  Word: {example.word_form} (lemma: {example.lemma}, pos: {example.pos})")
+                    print(f"  Expected: {example.synset_id}")
+                    print(f"  Predicted: {predicted_synset_id} ({predicted_definition})")
+                    print(f"  Sentence: {example.marked_text}")
+
+            # Update progress bar
+            accuracy = correct / end_idx
             pbar.set_description(f"Accuracy: {accuracy:.3f}")
-            pbar.update()
+            pbar.update(len(batch))

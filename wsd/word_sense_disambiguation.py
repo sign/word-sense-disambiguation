@@ -7,7 +7,14 @@ import spacy
 from colorama import Fore, Style, init
 
 from wsd.env import WORDNET_URL
-from wsd.masked_language_model import load_model, unmask_token
+from wsd.masked_language_model import load_model, unmask_token, unmask_token_batch
+
+
+@dataclass
+class WordQuery:
+    """Query for word definitions"""
+    form: str
+    pos: str
 
 
 @dataclass
@@ -40,29 +47,6 @@ class WordSenseDisambiguation:
     entities: list[Entity]
 
 
-def request(language: str, path: str) -> dict:
-    """Make a request to the WordNet API
-
-    Args:
-        language: Language code (e.g., "en")
-        path: API path (e.g., "words?form=bank&pos=n")
-
-    Returns:
-        JSON response as a dictionary
-    """
-    url = f"{WORDNET_URL}/lexicons/omw-{language}:1.4/{path}"
-    try:
-        response = requests.get(url, stream=True)
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {}
-    except (requests.RequestException, ValueError) as e:
-        print(f"Error making request to {url}: {e}")
-        return {}
-
-
 @cache
 def get_spacy_pipeline(language: str = "en"):
     """Get or load and cache spaCy model for given language"""
@@ -79,18 +63,82 @@ def get_spacy_pipeline(language: str = "en"):
     raise ValueError(msg)
 
 
-def get_definitions(word: str, pos: str, language: str = "en") -> list[tuple[str, str]]:
-    """Fetch definitions for a word from the API"""
-    path = f"words?form={word}&pos={pos}"
-    data = request(language, path)
+def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list[tuple[str, str]]]:
+    """
+    Fetch definitions for multiple words using the batch endpoint.
 
-    definitions = []
-    for item in data.get('data', []):
-        for included in item.get('included', []):
-            definition = included.get('attributes', {}).get('definition', '')
-            if definition:
-                definitions.append((included['id'], definition))
-    return definitions
+    Args:
+        queries: List of WordQuery objects with form and pos
+        language: Language code (default: "en")
+
+    Returns:
+        List of definition lists, one per query (in same order as input).
+        Each definition list contains (synset_id, definition) tuples.
+    """
+    if not queries:
+        return []
+
+    # Prepare the request payload
+    url = f"{WORDNET_URL}/lexicons/omw-{language}:1.4/definitions"
+    payload = {
+        "queries": [{"form": q.form, "pos": q.pos} for q in queries]
+    }
+
+    try:
+        response = requests.post(url, json=payload)
+
+        if response.status_code != 200:
+            print(f"Error: API returned status code {response.status_code}")
+            return [[] for _ in queries]
+
+        data = response.json()
+
+        # Parse response and maintain order
+        results = []
+        for i, item in enumerate(data.get("data", [])):
+            definitions = []
+            # Sort definitions by synset_id for consistent ordering
+            definitions_dict = item.get("definitions", {})
+            for synset_id in sorted(definitions_dict.keys()):
+                definition = definitions_dict[synset_id]
+                definitions.append((synset_id, definition))
+            results.append(definitions)
+
+            # Debug: print first few examples
+            if i < 3:
+                query = queries[i]
+                print(f"DEBUG: Query {i}: form={query.form}, pos={query.pos}")
+                print(f"DEBUG: Got {len(definitions)} definitions")
+                if definitions:
+                    print(f"DEBUG: First definition: {definitions[0]}")
+                print()
+
+        # If response doesn't have enough items, pad with empty lists
+        if len(results) < len(queries):
+            raise Exception("API response has fewer items than queries")
+
+    except (requests.RequestException, ValueError) as e:
+        print(f"Error making batch request to {url}: {e}")
+        return [[] for _ in queries]
+    else:
+        return results
+
+
+def get_definitions_single(word: str, pos: str, language: str = "en") -> list[tuple[str, str]]:
+    """
+    Convenience function to fetch definitions for a single word.
+
+    Args:
+        word: Word form to look up
+        pos: Part of speech
+        language: Language code (default: "en")
+
+    Returns:
+        List of (synset_id, definition) tuples for the word
+    """
+    query = WordQuery(form=word, pos=pos)
+    results = get_definitions([query], language)
+    return results[0] if results else []
 
 
 def create_marked_sentence(doc, target_position: int) -> str:
@@ -196,6 +244,72 @@ def disambiguate_word(word: str, marked_sentence: str, definitions: list[tuple[s
         return best_synset, best_definition, normalized_score
 
 
+def disambiguate_word_batch(
+    batch_data: list[tuple[str, str, list[tuple[str, str]]]]
+) -> list[tuple[str, str, float]]:
+    """
+    Batch version of disambiguate_word that processes multiple words in parallel.
+
+    Args:
+        batch_data: List of tuples, each containing:
+            - word: The word to disambiguate
+            - marked_sentence: Sentence with the word marked
+            - definitions: List of (synset_id, definition) tuples
+
+    Returns:
+        List of tuples (synset_id, definition, confidence) for each input
+    """
+    if not batch_data:
+        return []
+
+    model, tokenizer, device = load_model()
+
+    # Prepare prompts and track which ones are valid
+    prompts = []
+    valid_indices = []  # Track which inputs have definitions
+    for i, (word, marked_sentence, definitions) in enumerate(batch_data):
+        if definitions:
+            text = create_multiple_choice_prompt(word, tokenizer.mask_token, marked_sentence, definitions)
+            prompts.append(text)
+            valid_indices.append(i)
+
+    # If no valid prompts, return empty results for all
+    if not prompts:
+        return [("No definitions found", "", 0.0) for _ in batch_data]
+
+    # Get predictions for all prompts in batch
+    batch_results = unmask_token_batch(prompts)
+
+    # Process results
+    results = []
+    result_idx = 0
+    for i, (_word, _marked_sentence, definitions) in enumerate(batch_data):
+        if i not in valid_indices:
+            # No definitions for this word
+            results.append(("No definitions found", "", 0.0))
+        else:
+            # Process the prediction for this word
+            _, probs = batch_results[result_idx]
+            result_idx += 1
+
+            # Get probabilities for all choices
+            choice_probs = get_choice_probabilities(tokenizer, probs, definitions)
+
+            # Find best choice and normalize
+            best_choice_idx = choice_probs.index(max(choice_probs))
+            total_prob = sum(choice_probs)
+            normalized_score = choice_probs[best_choice_idx] / total_prob if total_prob > 0 else 0.0
+
+            # Handle "none of the above" case
+            if best_choice_idx == len(definitions):  # Next letter option selected
+                results.append(("", "none of the above", normalized_score))
+            else:
+                best_synset, best_definition = definitions[best_choice_idx]
+                results.append((best_synset, best_definition, normalized_score))
+
+    return results
+
+
 def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
     nlp = get_spacy_pipeline(language)
     doc = nlp(text)
@@ -204,6 +318,8 @@ def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
 
     pos_map = {'NOUN': 'n', 'VERB': 'v', 'ADJ': 'a'}
 
+    # First pass: Create all base tokens and identify content words to disambiguate
+    content_word_indices = []
     for token in doc:
         # Create base token info
         disambiguated_token = DisambiguatedToken(
@@ -214,29 +330,44 @@ def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
             start_char=token.idx,
             end_char=token.idx + len(token.text)
         )
+        tokens.append(disambiguated_token)
 
-        # Only disambiguate content words
+        # Track content words that need disambiguation
         if token.pos_ in pos_map and not token.is_punct and not token.is_space:
-            pos = pos_map[token.pos_]
-            definitions = get_definitions(token.lemma_.lower(), pos, language)
+            content_word_indices.append(token.i)
 
+    # Batch fetch definitions for all content words
+    if content_word_indices:
+        queries = [
+            WordQuery(form=tokens[i].lemma, pos=pos_map[tokens[i].pos])
+            for i in content_word_indices
+        ]
+        all_definitions = get_definitions(queries, language)
+
+        # Prepare batch data for disambiguation
+        batch_data = []
+        valid_indices = []  # Track which content words have definitions
+        for idx, definitions in zip(content_word_indices, all_definitions):
             if definitions:
-                marked_sentence = create_marked_sentence(doc, token.i)
-                synset_id, best_def, confidence = disambiguate_word(token.text, marked_sentence, definitions)
+                marked_sentence = create_marked_sentence(doc, idx)
+                batch_data.append((tokens[idx].word, marked_sentence, definitions))
+                valid_indices.append(idx)
 
+        # Batch disambiguate all content words with definitions
+        if batch_data:
+            predictions = disambiguate_word_batch(batch_data)
+
+            # Update tokens with disambiguation results
+            for token_idx, (synset_id, best_def, confidence) in zip(valid_indices, predictions):
                 # Handle "none of the above" case
                 if best_def == "none of the above":
-                    disambiguated_token.synset_id = None
-                    disambiguated_token.synset_definition = None
-                    disambiguated_token.confidence = confidence
+                    tokens[token_idx].synset_id = None
+                    tokens[token_idx].synset_definition = None
+                    tokens[token_idx].confidence = confidence
                 else:
-                    # For now, use definition as synset_id placeholder
-                    # In a real implementation, you'd map definitions to synset IDs
-                    disambiguated_token.synset_id = synset_id
-                    disambiguated_token.synset_definition = best_def
-                    disambiguated_token.confidence = confidence
-
-        tokens.append(disambiguated_token)
+                    tokens[token_idx].synset_id = synset_id
+                    tokens[token_idx].synset_definition = best_def
+                    tokens[token_idx].confidence = confidence
 
     # Extract linked entities using entityLinker
     if hasattr(doc._, 'linkedEntities'):

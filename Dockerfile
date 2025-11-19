@@ -1,27 +1,32 @@
-FROM python:3.12-slim
+FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel
 
 WORKDIR /app
 
-# Install system dependencies for spaCy and transformers
-RUN apt-get update && apt-get install -y \
-    python3-pip \
-    python3-dev \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Install Flash Attention
+RUN pip install packaging ninja psutil && \
+    MAX_JOBS=4 pip install flash_attn --no-build-isolation
+
+# Rendering system deps (pango, cairo...)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install package dependencies
+RUN mkdir -p /app/welt/vision && \
+    touch /app/README.md
+COPY pyproject.toml /app/pyproject.toml
+RUN pip install ".[train]"
 
 # Copy requirements first for better Docker layer caching
 COPY pyproject.toml .
-
 RUN mkdir wsd && touch wsd/__init__.py
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -e ".[web]"
-
-# Install Flash Attention
-## Install fused kernel packages
-RUN pip install packaging ninja psutil
-## Limit Jobs, due to memory issues
-RUN MAX_JOBS=4 pip install flash_attn --no-build-isolation
+# Install Python dependencies & Accelerate spaCy with CUDA
+RUN pip install --no-cache-dir ".[web]" spacy[cuda12x]
 
 # Copy application code
 COPY wsd/ ./wsd/
