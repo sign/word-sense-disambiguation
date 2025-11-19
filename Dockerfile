@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -16,6 +16,12 @@ RUN mkdir wsd && touch wsd/__init__.py
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -e ".[web]"
+
+# Install Flash Attention
+## Install fused kernel packages
+RUN pip install packaging ninja psutil
+## Limit Jobs, due to memory issues
+RUN MAX_JOBS=4 pip install flash_attn --no-build-isolation
 
 # Copy application code
 COPY wsd/ ./wsd/

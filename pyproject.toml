@@ -8,6 +8,7 @@ authors = [
 readme = "README.md"
 dependencies = [
     "transformers",
+    "accelerate",
     "tqdm",
     "spacy",
     "spacy-entity-linker",
@@ -25,6 +26,10 @@ dev = [
 web = [
     "uvicorn",
     "starlette"
+]
+
+benchmark = [
+    "wn"
 ]
 
 [tool.setuptools]

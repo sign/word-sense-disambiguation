@@ -1,4 +1,3 @@
-import importlib.util
 from functools import cache
 
 import torch
@@ -11,35 +10,22 @@ class PromptMaskError(ValueError):
 
 @cache
 def load_model(model_name: str = "answerdotai/ModernBERT-Large-Instruct"):
-    """Load and cache the ModernBERT model and tokenizer"""
-    # Device selection priority: CUDA > MPS > CPU
     if torch.cuda.is_available():
-        device = 'cuda'
+        device = "cuda"
     elif torch.backends.mps.is_available():
-        device = 'mps'
+        device = "mps"
     else:
-        device = 'cpu'
+        device = "cpu"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    # Load model with appropriate optimizations
-    attn_implementation = None
-    if device == 'cuda':
-        try:
-            has_flash_attention = importlib.util.find_spec("flash_attn") is not None
-        except (ModuleNotFoundError, ValueError):
-            has_flash_attention = False
-
-        if has_flash_attention:
-            attn_implementation = "flash_attention_2"
-        else:
-            print("FlashAttention not available, using standard attention for CUDA.")
-
-    model = AutoModelForMaskedLM.from_pretrained(model_name, attn_implementation=attn_implementation)
-
-    model.to(device)
+    model = AutoModelForMaskedLM.from_pretrained(
+        model_name,
+        device_map=device,
+        dtype=torch.float16 if device == "cuda" else None,
+    )
     model.eval()
-    print(f"Model loaded on device: {device}")
+    print(f"Model loaded on device: {model.device}")
     return model, tokenizer, device
 
 

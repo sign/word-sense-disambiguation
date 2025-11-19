@@ -1,5 +1,5 @@
 .idea/
 .claude/
-dictionary.egg-info
+wsd.egg-info
 build
 .env

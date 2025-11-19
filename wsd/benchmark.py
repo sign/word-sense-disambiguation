@@ -1,4 +1,3 @@
-
 import re
 from dataclasses import dataclass
 
@@ -18,6 +17,13 @@ class WordNetExample:
 
 def collect_wordnet_examples():
     """List all English words and example sentences from WordNet"""
+
+    # Ensure omw-en:1.4 is downloaded
+    try: 
+        wn.Wordnet(lang="en")
+    except wn.Error:
+        print("Downloading omw-en:1.4...")
+        wn.download("omw-en:1.4")
 
     # Get English WordNet
     en = wn.Wordnet(lang="en")
@@ -43,7 +49,7 @@ def collect_wordnet_examples():
                         yield WordNetExample(synset_id, form, word.lemma(), word.pos, marked_text)
 
 if __name__ == "__main__":
-    examples = list(tqdm(collect_wordnet_examples(), desc="Collecting WordNet Examples"))
+    examples = list(tqdm(collect_wordnet_examples(), desc="Collecting examples"))
     correct = 0
 
     with tqdm(examples, desc="Evaluating examples") as pbar:
@@ -55,4 +61,3 @@ if __name__ == "__main__":
             accuracy = correct / (pbar.n + 1)
             pbar.set_description(f"Accuracy: {accuracy:.3f}")
             pbar.update()
-

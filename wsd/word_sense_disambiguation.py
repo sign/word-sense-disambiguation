@@ -40,6 +40,29 @@ class WordSenseDisambiguation:
     entities: list[Entity]
 
 
+def request(language: str, path: str) -> dict:
+    """Make a request to the WordNet API
+
+    Args:
+        language: Language code (e.g., "en")
+        path: API path (e.g., "words?form=bank&pos=n")
+
+    Returns:
+        JSON response as a dictionary
+    """
+    url = f"{WORDNET_URL}/lexicons/omw-{language}:1.4/{path}"
+    try:
+        response = requests.get(url, stream=True)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {}
+    except (requests.RequestException, ValueError) as e:
+        print(f"Error making request to {url}: {e}")
+        return {}
+
+
 @cache
 def get_spacy_pipeline(language: str = "en"):
     """Get or load and cache spaCy model for given language"""
@@ -58,23 +81,16 @@ def get_spacy_pipeline(language: str = "en"):
 
 def get_definitions(word: str, pos: str, language: str = "en") -> list[tuple[str, str]]:
     """Fetch definitions for a word from the API"""
-    url = f"{WORDNET_URL}/lexicons/omw-{language}:1.4/words?form={word}&pos={pos}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            data = response.json()
-            definitions = []
-            for item in data.get('data', []):
-                for included in item.get('included', []):
-                    definition = included.get('attributes', {}).get('definition', '')
-                    if definition:
-                        definitions.append((included['id'], definition))
-            return definitions
-        else:
-            return []
-    except (requests.RequestException, ValueError) as e:
-        print(f"Error fetching definitions for {word}: {e}")
-        return []
+    path = f"words?form={word}&pos={pos}"
+    data = request(language, path)
+
+    definitions = []
+    for item in data.get('data', []):
+        for included in item.get('included', []):
+            definition = included.get('attributes', {}).get('definition', '')
+            if definition:
+                definitions.append((included['id'], definition))
+    return definitions
 
 
 def create_marked_sentence(doc, target_position: int) -> str:
@@ -154,7 +170,7 @@ def get_choice_probabilities(tokenizer, probs, definitions: list[tuple[str, str]
 def disambiguate_word(word: str, marked_sentence: str, definitions: list[tuple[str, str]]) -> tuple[str, str, float]:
     """Use ModernBERT to disambiguate word sense given context and definitions"""
     if not definitions:
-        return "No definitions found", 0.0
+        return "No definitions found", "", 0.0
 
     model, tokenizer, device = load_model()
 
