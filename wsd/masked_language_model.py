@@ -1,10 +1,9 @@
 import time
 from dataclasses import dataclass
 from functools import cache
-from typing import Any
 
 import torch
-from transformers import AutoModelForMaskedLM, AutoTokenizer
+from transformers import AutoModelForMaskedLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
 
 class PromptMaskError(ValueError):
@@ -15,8 +14,8 @@ class PromptMaskError(ValueError):
 @dataclass
 class ModelComponents:
     """Components returned by load_model"""
-    model: Any
-    tokenizer: Any
+    model: PreTrainedModel
+    tokenizer: PreTrainedTokenizerBase
     device: str
 
 
@@ -25,6 +24,7 @@ class UnmaskResult:
     """Result of unmasking a single token"""
     token: str
     probabilities: torch.Tensor
+
 
 @cache
 def load_model(model_name: str = "answerdotai/ModernBERT-Large-Instruct") -> ModelComponents:
@@ -43,7 +43,6 @@ def load_model(model_name: str = "answerdotai/ModernBERT-Large-Instruct") -> Mod
         torch_dtype=torch.float16 if device == "cuda" else None,
     )
     model.eval()
-    print(f"Model loaded on device: {model.device}")
     return ModelComponents(model=model, tokenizer=tokenizer, device=device)
 
 
@@ -80,6 +79,9 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     Raises:
         PromptMaskError: If any text doesn't contain a mask token
     """
+    if not texts:
+        return []
+
     components = load_model()
 
     # Tokenize all texts with padding

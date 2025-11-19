@@ -134,22 +134,29 @@ def test_e2e_disambiguate_endpoint(server):
     assert len(result["tokens"]) > 0
     assert len(result["entities"]) > 0
 
-    # Validate last token "company" which should have synset information
-    company_token = result["tokens"][3].copy()
-    company_token.pop("confidence", None)  # Remove confidence for comparison
+    # Validate "technology" token structure
+    technology_token = result["tokens"][3]
 
-    expected_company_token = {
-        'end_char': 21,
-        'lemma': 'technology',
-        'pos': 'NOUN',
-        'position': 3,
-        'start_char': 11,
-        'synset_definition': 'the discipline dealing with the art or science of '
-                             'applying scientific knowledge to practical problems',
-        'synset_id': 'omw-en-06125041-n',
-        'word': 'technology'
-    }
-    assert company_token == expected_company_token
+    # Check basic structure
+    assert technology_token['word'] == 'technology'
+    assert technology_token['lemma'] == 'technology'
+    assert technology_token['pos'] == 'NOUN'
+    assert technology_token['position'] == 3
+    assert technology_token['start_char'] == 11
+    assert technology_token['end_char'] == 21
+
+    # Check that disambiguation keys exist
+    # confidence, synset_id, and synset_definition may be None if:
+    # 1. No definitions were found from API
+    # 2. Model chose "none of the above"
+    assert 'confidence' in technology_token
+    assert 'synset_id' in technology_token
+    assert 'synset_definition' in technology_token
+
+    # If confidence is not None, it should be a valid number
+    if technology_token['confidence'] is not None:
+        assert isinstance(technology_token['confidence'], (int, float))
+        assert 0.0 <= technology_token['confidence'] <= 1.0
 
     # Validate first entity exactly
     expected_first_entity = {

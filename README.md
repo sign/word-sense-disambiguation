@@ -22,7 +22,7 @@ uvicorn --reload wsd.server:app --port 8005
 ### Running with Docker
 
 ```shell
-docker build -t wsd .
+docker build --platform="linux/amd64" -t wsd .
 docker run -p 8005:8080 -e PORT=8080 -e WORDNET_URL=http://127.0.0.1:8000 wsd
 ```
 

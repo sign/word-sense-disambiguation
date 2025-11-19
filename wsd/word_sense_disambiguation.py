@@ -9,6 +9,10 @@ from colorama import Fore, Style, init
 from wsd.env import WORDNET_URL
 from wsd.masked_language_model import load_model, unmask_token, unmask_token_batch
 
+# Constants
+NO_DEFINITIONS_FOUND = "No definitions found"
+NONE_OF_THE_ABOVE = "none of the above"
+
 
 @dataclass
 class WordQuery:
@@ -118,7 +122,7 @@ def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list
 
         # Parse response and maintain order
         results = []
-        for i, item in enumerate(data.get("data", [])):
+        for item in data.get("data", []):
             definitions = []
             # Sort definitions by synset_id for consistent ordering
             definitions_dict = item.get("definitions", {})
@@ -127,24 +131,15 @@ def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list
                 definitions.append(Definition(synset_id=synset_id, definition=definition_text))
             results.append(definitions)
 
-            # Debug: print first few examples
-            if i < 3:
-                query = queries[i]
-                print(f"DEBUG: Query {i}: form={query.form}, pos={query.pos}")
-                print(f"DEBUG: Got {len(definitions)} definitions")
-                if definitions:
-                    print(f"DEBUG: First definition: {definitions[0]}")
-                print()
-
         # If response doesn't have enough items, pad with empty lists
         if len(results) < len(queries):
-            raise Exception("API response has fewer items than queries")
+            raise ValueError(f"API response has {len(results)} items but expected {len(queries)} queries")
+
+        return results
 
     except (requests.RequestException, ValueError) as e:
         print(f"Error making batch request to {url}: {e}")
         return [[] for _ in queries]
-    else:
-        return results
 
 
 def get_definitions_single(word: str, pos: str, language: str = "en") -> list[Definition]:
@@ -186,7 +181,7 @@ def create_multiple_choice_prompt(word: str, mask_token: str, marked_sentence: s
 
     # Add "none of the above" option using next sequential letter
     none_letter = chr(ord('A') + len(definitions))
-    choices.append(f"- {none_letter}: none of the above")
+    choices.append(f"- {none_letter}: {NONE_OF_THE_ABOVE}")
     choices_lines = "\n".join(choices)
     return f"""Disambiguate the meaning of the highlighted word based on its usage in the sentence.
 Choose the most appropriate sense from the list.
@@ -206,6 +201,7 @@ Answer: [unused0] {mask_token}"""
 def get_choice_probabilities(tokenizer, probs, definitions: list[Definition]) -> list[float]:
     """Get probabilities for all choice letters including 'none of the above'"""
     choice_probs = []
+    vocab_size = len(probs)
 
     # Get probabilities for definition choices A, B, C, etc.
     for i in range(len(definitions)):
@@ -216,9 +212,9 @@ def get_choice_probabilities(tokenizer, probs, definitions: list[Definition]) ->
         space_letter_token_id = tokenizer.convert_tokens_to_ids(f" {letter}")
 
         total_prob = 0.0
-        if letter_token_id is not None:
+        if letter_token_id is not None and letter_token_id < vocab_size:
             total_prob += probs[letter_token_id].item()
-        if space_letter_token_id is not None:
+        if space_letter_token_id is not None and space_letter_token_id < vocab_size:
             total_prob += probs[space_letter_token_id].item()
 
         choice_probs.append(total_prob)
@@ -229,9 +225,9 @@ def get_choice_probabilities(tokenizer, probs, definitions: list[Definition]) ->
     space_none_token_id = tokenizer.convert_tokens_to_ids(f" {none_letter}")
 
     none_prob = 0.0
-    if none_token_id is not None:
+    if none_token_id is not None and none_token_id < vocab_size:
         none_prob += probs[none_token_id].item()
-    if space_none_token_id is not None:
+    if space_none_token_id is not None and space_none_token_id < vocab_size:
         none_prob += probs[space_none_token_id].item()
 
     choice_probs.append(none_prob)
@@ -242,7 +238,7 @@ def disambiguate_word(word: str, marked_sentence: str, definitions: list[Definit
     """Use ModernBERT to disambiguate word sense given context and definitions"""
     if not definitions:
         return DisambiguationResult(
-            synset_id="No definitions found",
+            synset_id=NO_DEFINITIONS_FOUND,
             definition="",
             confidence=0.0
         )
@@ -267,7 +263,7 @@ def disambiguate_word(word: str, marked_sentence: str, definitions: list[Definit
     if best_choice_idx == len(definitions):  # Next letter option selected
         return DisambiguationResult(
             synset_id="",
-            definition="none of the above",
+            definition=NONE_OF_THE_ABOVE,
             confidence=normalized_score
         )
     else:
@@ -314,7 +310,7 @@ def disambiguate_word_batch(
     if not prompts:
         return [
             DisambiguationResult(
-                synset_id="No definitions found",
+                synset_id=NO_DEFINITIONS_FOUND,
                 definition="",
                 confidence=0.0
             )
@@ -332,7 +328,7 @@ def disambiguate_word_batch(
             # No definitions for this word
             results.append(
                 DisambiguationResult(
-                    synset_id="No definitions found",
+                    synset_id=NO_DEFINITIONS_FOUND,
                     definition="",
                     confidence=0.0
                 )
@@ -359,7 +355,7 @@ def disambiguate_word_batch(
                 results.append(
                     DisambiguationResult(
                         synset_id="",
-                        definition="none of the above",
+                        definition=NONE_OF_THE_ABOVE,
                         confidence=normalized_score
                     )
                 )
@@ -432,7 +428,7 @@ def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
             # Update tokens with disambiguation results
             for token_idx, result in zip(valid_indices, predictions):
                 # Handle "none of the above" case
-                if result.definition == "none of the above":
+                if result.definition == NONE_OF_THE_ABOVE:
                     tokens[token_idx].synset_id = None
                     tokens[token_idx].synset_definition = None
                     tokens[token_idx].confidence = result.confidence

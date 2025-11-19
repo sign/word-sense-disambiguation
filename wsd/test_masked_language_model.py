@@ -1,7 +1,13 @@
 import pytest
 import torch
 
-from wsd.masked_language_model import PromptMaskError, load_model, unmask_token
+from wsd.masked_language_model import (
+    PromptMaskError,
+    load_model,
+    unmask_token,
+    unmask_token_batch,
+    UnmaskResult,
+)
 
 
 def test_load_model():
@@ -61,6 +67,82 @@ def test_multiple_mask_tokens():
     assert isinstance(result.token, str)
     assert len(result.token.strip()) > 0
     assert isinstance(result.probabilities, torch.Tensor)
+
+
+def test_unmask_token_batch_basic():
+    """Test batch processing with multiple texts"""
+    components = load_model()
+    texts = [
+        f"Answer 'Yes' or 'No'.\nQUESTION: Is Paris the capital of France?\nANSWER: [unused0] {components.tokenizer.mask_token}",
+        f"Answer 'Yes' or 'No'.\nQUESTION: Is London the capital of Germany?\nANSWER: [unused0] {components.tokenizer.mask_token}",
+    ]
+
+    results = unmask_token_batch(texts)
+
+    # Should return correct number of results
+    assert len(results) == len(texts)
+
+    # Each result should be an UnmaskResult
+    for result in results:
+        assert isinstance(result, UnmaskResult)
+        assert isinstance(result.token, str)
+        assert len(result.token.strip()) > 0
+        assert isinstance(result.probabilities, torch.Tensor)
+        assert result.probabilities.sum().item() == pytest.approx(1.0, abs=1e-5)
+
+    # Check expected answers
+    assert results[0].token.lower() == "yes"
+    assert results[1].token.lower() == "no"
+
+
+def test_unmask_token_batch_single_item():
+    """Test batch processing with single item"""
+    components = load_model()
+    texts = [
+        f"Answer 'Yes' or 'No'.\nQUESTION: Is Paris the capital of France?\nANSWER: [unused0] {components.tokenizer.mask_token}"
+    ]
+
+    results = unmask_token_batch(texts)
+
+    assert len(results) == 1
+    assert isinstance(results[0], UnmaskResult)
+    assert results[0].token.lower() == "yes"
+
+
+def test_unmask_token_batch_empty_list():
+    """Test batch processing with empty list"""
+    results = unmask_token_batch([])
+    assert results == []
+
+
+def test_unmask_token_batch_no_mask_error():
+    """Test that batch processing raises error when any text lacks mask token"""
+    texts = [
+        "This text has no mask token.",
+        "Neither does this one.",
+    ]
+
+    with pytest.raises(PromptMaskError):
+        unmask_token_batch(texts)
+
+
+def test_unmask_token_batch_consistency():
+    """Test that batch processing produces same results as sequential processing"""
+    components = load_model()
+    texts = [
+        f"Answer 'Yes' or 'No'.\nQUESTION: Is Paris the capital of France?\nANSWER: [unused0] {components.tokenizer.mask_token}",
+        f"Answer 'Yes' or 'No'.\nQUESTION: Is London the capital of Germany?\nANSWER: [unused0] {components.tokenizer.mask_token}",
+    ]
+
+    # Get batch results
+    batch_results = unmask_token_batch(texts)
+
+    # Get sequential results
+    sequential_results = [unmask_token(text) for text in texts]
+
+    # Compare tokens
+    for batch_result, seq_result in zip(batch_results, sequential_results):
+        assert batch_result.token == seq_result.token
 
 
 if __name__ == "__main__":
