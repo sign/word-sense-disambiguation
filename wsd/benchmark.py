@@ -26,13 +26,11 @@ def collect_wordnet_examples():
 
     # Ensure omw-en:1.4 is downloaded
     try:
-        wn.Wordnet(lang="en")
+        en = wn.Wordnet(lexicon="omw-en:1.4")
     except wn.Error:
         print("Downloading omw-en:1.4...")
         wn.download("omw-en:1.4")
-
-    # Get English WordNet
-    en = wn.Wordnet(lang="en")
+        en = wn.Wordnet(lexicon="omw-en:1.4")
 
     # Iterate through all synsets
     for synset in en.synsets():
@@ -46,9 +44,9 @@ def collect_wordnet_examples():
         if len(examples) == 0:
             continue
 
-        for example in examples:
-            for word in synset.words():
-                for form in word.forms():
+        for word in synset.words():
+            for form in word.forms():
+                for example in examples:
                     regex_form = r'\b' + re.escape(form) + r'\b'
                     if re.search(regex_form, example, re.IGNORECASE):
                         marked_text = re.sub(regex_form, r'*\g<0>*', example, flags=re.IGNORECASE)
@@ -56,10 +54,9 @@ def collect_wordnet_examples():
 
 if __name__ == "__main__":
     examples = collect_wordnet_examples()
-    examples = itertools.islice(examples, 100)
     examples = list(tqdm(examples, desc="Collecting examples"))
     correct = 0
-    batch_size = 32
+    batch_size = 64
 
     # Process examples in batches
     num_batches = (len(examples) + batch_size - 1) // batch_size
@@ -98,10 +95,12 @@ if __name__ == "__main__":
                     print(f"\nDEBUG Mismatch #{start_idx + i}:")
                     print(f"  Word: {example.word_form} (lemma: {example.lemma}, pos: {example.pos})")
                     print(f"  Expected: {example.synset_id}")
-                    print(f"  Predicted: {result.synset_id} ({result.definition})")
+                    print(f"  Predicted: {result.synset_id} ({result.definition}, {result.confidence})")
                     print(f"  Sentence: {example.marked_text}")
 
             # Update progress bar
             accuracy = correct / end_idx
             pbar.set_description(f"Accuracy: {accuracy:.3f}")
             pbar.update(len(batch))
+
+    print(f"Accuracy: {accuracy:.3f}")

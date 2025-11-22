@@ -110,7 +110,8 @@ python wsd/benchmark.py
 | NVIDIA DGX Spark | ModernBERT | 00:11:37 | 54.6%    | With Flash Attention       |
 | NVIDIA DGX Spark | none       | 00:08:36 | 0%       | Just Definitions           |
 | NVIDIA DGX Spark | none       | 00:01:02 | 0%       | Definitions Batch Endpoint |
-| NVIDIA DGX Spark | none       | 00:03:27 | 38.5%    | Batch size 64              |
+| NVIDIA DGX Spark | ModernBERT | 00:03:27 | 38.5%    | Batch size 64              |
+| NVIDIA DGX Spark | ModernBERT | 00:03:37 | 58.1%    | Prompt Optimizations       |
 
 
 

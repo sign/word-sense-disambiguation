@@ -8,10 +8,11 @@ from colorama import Fore, Style, init
 
 from wsd.env import WORDNET_URL
 from wsd.masked_language_model import load_model, unmask_token, unmask_token_batch
+from wsd.prompt import Definition, get_option_letter, create_multiple_choice_prompt, NONE_OF_THE_ABOVE, \
+    create_marked_sentence
 
 # Constants
 NO_DEFINITIONS_FOUND = "No definitions found"
-NONE_OF_THE_ABOVE = "none of the above"
 
 
 @dataclass
@@ -43,13 +44,6 @@ class Entity:
     text: str
     description: Optional[str] = None
     url: Optional[str] = None
-
-
-@dataclass
-class Definition:
-    """A single word definition from WordNet"""
-    synset_id: str
-    definition: str
 
 
 @dataclass
@@ -90,9 +84,9 @@ def get_spacy_pipeline(language: str = "en"):
     raise ValueError(msg)
 
 
-def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
+def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
     """
-    Fetch definitions for multiple words using the batch endpoint.
+    Internal function to fetch definitions for multiple words using the batch endpoint.
 
     Args:
         queries: List of WordQuery objects with form and pos
@@ -142,6 +136,56 @@ def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list
         return [[] for _ in queries]
 
 
+def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
+    """
+    Fetch definitions for multiple words using the batch endpoint.
+
+    For adjectives (pos="a"), automatically fetches and concatenates definitions
+    from both "a" (adjective) and "s" (adjective satellite) categories.
+
+    Args:
+        queries: List of WordQuery objects with form and pos
+        language: Language code (default: "en")
+
+    Returns:
+        List of definition lists, one per query (in same order as input).
+        Each definition list contains Definition objects.
+    """
+    if not queries:
+        return []
+
+    # Expand queries: when pos is "a", we need to query both "a" and "s"
+    expanded_queries = []
+    query_mapping = []  # Maps expanded query index to (original query index, pos_type)
+
+    for i, q in enumerate(queries):
+        if q.pos == "a":
+            # Add both "a" and "s" queries
+            expanded_queries.append(WordQuery(form=q.form, pos="a"))
+            query_mapping.append((i, "a"))
+            expanded_queries.append(WordQuery(form=q.form, pos="s"))
+            query_mapping.append((i, "s"))
+        else:
+            expanded_queries.append(q)
+            query_mapping.append((i, None))
+
+    # Get definitions for all expanded queries
+    expanded_results = _get_definitions_raw(expanded_queries, language)
+
+    # Collapse results back to match original queries
+    results = [[] for _ in queries]
+    for idx, (orig_idx, pos_type) in enumerate(query_mapping):
+        if pos_type is None:
+            # Not an "a" query, just copy the result
+            results[orig_idx] = expanded_results[idx]
+        else:
+            # This is an "a" or "s" part of an adjective query
+            # Concatenate to the existing result
+            results[orig_idx].extend(expanded_results[idx])
+
+    return results
+
+
 def get_definitions_single(word: str, pos: str, language: str = "en") -> list[Definition]:
     """
     Convenience function to fetch definitions for a single word.
@@ -159,45 +203,6 @@ def get_definitions_single(word: str, pos: str, language: str = "en") -> list[De
     return results[0] if results else []
 
 
-def create_marked_sentence(doc, target_position: int) -> str:
-    """Create sentence with target word marked with asterisks"""
-    text = ""
-    for token in doc:
-        if token.i == target_position:
-            text += f"*{token.text}*"
-        else:
-            text += token.text
-        text += token.whitespace_
-    return text
-
-
-def create_multiple_choice_prompt(word: str, mask_token: str, marked_sentence: str,
-                                  definitions: list[Definition]) -> str:
-    """Create multiple choice prompt for word sense disambiguation"""
-    choices = []
-    for i, definition_obj in enumerate(definitions):
-        letter = chr(ord('A') + i)
-        choices.append(f"- {letter}: {definition_obj.definition}")
-
-    # Add "none of the above" option using next sequential letter
-    none_letter = chr(ord('A') + len(definitions))
-    choices.append(f"- {none_letter}: {NONE_OF_THE_ABOVE}")
-    choices_lines = "\n".join(choices)
-    return f"""Disambiguate the meaning of the highlighted word based on its usage in the sentence.
-Choose the most appropriate sense from the list.
-
-Sentence:
-{marked_sentence}
-
-Question:
-Which sense best matches the meaning of the highlighted word (*{word}*) as used in this sentence?
-
-Choices:
-{choices_lines}
-
-Answer: [unused0] {mask_token}"""
-
-
 def get_choice_probabilities(tokenizer, probs, definitions: list[Definition]) -> list[float]:
     """Get probabilities for all choice letters including 'none of the above'"""
     choice_probs = []
@@ -205,7 +210,7 @@ def get_choice_probabilities(tokenizer, probs, definitions: list[Definition]) ->
 
     # Get probabilities for definition choices A, B, C, etc.
     for i in range(len(definitions)):
-        letter = chr(ord('A') + i)
+        letter = get_option_letter(i)
 
         # Get probabilities for both "A" and " A" tokens and sum them
         letter_token_id = tokenizer.convert_tokens_to_ids(letter)
@@ -220,7 +225,7 @@ def get_choice_probabilities(tokenizer, probs, definitions: list[Definition]) ->
         choice_probs.append(total_prob)
 
     # Add probability for next letter (none of the above)
-    none_letter = chr(ord('A') + len(definitions))
+    none_letter = get_option_letter(len(definitions))
     none_token_id = tokenizer.convert_tokens_to_ids(none_letter)
     space_none_token_id = tokenizer.convert_tokens_to_ids(f" {none_letter}")
 
@@ -276,7 +281,7 @@ def disambiguate_word(word: str, marked_sentence: str, definitions: list[Definit
 
 
 def disambiguate_word_batch(
-    batch_data: list[DisambiguationInput]
+        batch_data: list[DisambiguationInput]
 ) -> list[DisambiguationResult]:
     """
     Batch version of disambiguate_word that processes multiple words in parallel.
@@ -344,7 +349,6 @@ def disambiguate_word_batch(
                 unmask_result.probabilities,
                 input_obj.definitions
             )
-
             # Find best choice and normalize
             best_choice_idx = choice_probs.index(max(choice_probs))
             total_prob = sum(choice_probs)
@@ -549,7 +553,7 @@ def visualize_sentence(text: str, results: list[DisambiguatedToken]) -> None:
 
 # Example usage
 if __name__ == "__main__":
-    test_sentence = "Apple is a technology company."
+    test_sentence = "Apple is going to be a technology company."
 
     results = disambiguate(test_sentence)
 

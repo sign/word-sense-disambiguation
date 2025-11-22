@@ -6,20 +6,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# Install Flash Attention
-RUN pip install packaging ninja psutil && \
-    MAX_JOBS=4 pip install flash_attn --no-build-isolation
-
 # Rendering system deps (pango, cairo...)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential pkg-config && \
+    apt-get install -y --no-install-recommends git build-essential pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
-# Install package dependencies
-RUN mkdir -p /app/welt/vision && \
-    touch /app/README.md
-COPY pyproject.toml /app/pyproject.toml
-RUN pip install ".[train]"
+# Install Flash Attention
+RUN pip install packaging ninja psutil && \
+    MAX_JOBS=4 pip install "flash_attn==2.6.3" --no-build-isolation
 
 # Copy requirements first for better Docker layer caching
 COPY pyproject.toml .
