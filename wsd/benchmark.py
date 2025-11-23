@@ -1,6 +1,7 @@
 import itertools
 import re
 from dataclasses import dataclass
+import random
 
 import wn
 from tqdm import tqdm
@@ -56,7 +57,10 @@ if __name__ == "__main__":
     examples = collect_wordnet_examples()
     examples = list(tqdm(examples, desc="Collecting examples"))
     correct = 0
-    batch_size = 64
+    batch_size = 32
+
+    # shuffle examples for more varied batching
+    random.shuffle(examples)
 
     # Process examples in batches
     num_batches = (len(examples) + batch_size - 1) // batch_size

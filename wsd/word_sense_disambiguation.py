@@ -382,7 +382,7 @@ def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
     tokens = []
     entities = []
 
-    pos_map = {'NOUN': 'n', 'VERB': 'v', 'ADJ': 'a'}
+    pos_map = {'NOUN': 'n', 'PROPN': 'n', 'VERB': 'v', 'ADJ': 'a'}
 
     # First pass: Create all base tokens and identify content words to disambiguate
     content_word_indices = []

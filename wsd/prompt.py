@@ -60,4 +60,4 @@ Sentence: {marked_sentence}
 
 {choices_lines}
 
-Answer: {mask_token}"""
+Answer: [unused0] {mask_token}"""

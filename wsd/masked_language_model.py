@@ -27,7 +27,8 @@ class UnmaskResult:
 
 
 @cache
-def load_model(model_name: str = "answerdotai/ModernBERT-Large-Instruct") -> ModelComponents:
+# def load_model(model_name: str = "/home/amit/dev/sign/word-sense-disambiguation/training/output/final") -> ModelComponents:
+def load_model(model_name: str = "sign/ModernBERT-Large-Instruct-WSD") -> ModelComponents:
     if torch.cuda.is_available():
         device = "cuda"
     elif torch.backends.mps.is_available():
@@ -40,7 +41,7 @@ def load_model(model_name: str = "answerdotai/ModernBERT-Large-Instruct") -> Mod
     model = AutoModelForMaskedLM.from_pretrained(
         model_name,
         device_map=device,
-        torch_dtype=torch.float16 if device == "cuda" else None,
+        dtype=torch.float16 if device == "cuda" else None,
     )
     model.eval()
     return ModelComponents(model=model, tokenizer=tokenizer, device=device)
