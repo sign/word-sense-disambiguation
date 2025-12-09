@@ -25,7 +25,7 @@ def get_option_letter(index: int) -> str:
     elif index < 109:
         return chr(ord('А') + (index - 76))
     else:
-        raise ValueError("Index too large for option letter")
+        raise ValueError(f"Index too large for option letter {index}")
 
 
 def create_marked_sentence(doc, target_position: int) -> str:
@@ -45,6 +45,9 @@ def create_multiple_choice_prompt(word: str,
                                   marked_sentence: str,
                                   definitions: list[Definition]) -> str:
     """Create multiple choice prompt for word sense disambiguation"""
+    if len(definitions) > 100:
+        print(f"Warning: too many definitions ({len(definitions)}) for word '{word}'")
+
     choices = []
     for i, definition_obj in enumerate(definitions):
         letter = get_option_letter(i)
