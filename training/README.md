@@ -6,6 +6,14 @@ This directory contains the training pipeline for fine-tuning ModernBERT-Large-I
 
 The training script fine-tunes the model to predict which definition best fits a word in context, using a multiple-choice format with masked language modeling.
 
+### Key Features
+
+- **POS-aware training**: Only shows definitions from the same part of speech as options
+- **"None of the above" examples**: Trains the model to recognize when no definition matches
+- **Flexible configuration**: Command-line arguments for easy customization
+- **Modular code structure**: Clean, well-documented functions for maintainability
+- **Reproducible training**: Configurable random seeds and comprehensive logging
+
 ## Data Format
 
 Training data is generated using `training/data/generate.py` and stored in `training/data/generated/`. Each JSON file represents one word form with multiple senses:
@@ -26,52 +34,87 @@ Training data is generated using `training/data/generate.py` and stored in `trai
 ]
 ```
 
+The data was compressed using
+```shell
+tar -I "xz -9e" -cvf generated.tar.xz generated/
+```
+
 ## Training Process
 
 The training script (`train.py`):
 
 1. Loads all JSON files from `training/data/generated/`
-2. For each word:
-   - Collects ALL definitions (both source and alternative) from all synsets
+2. For each word and synset:
+   - Collects definitions ONLY from synsets with the **same part of speech (POS) tag**
+   - For each synset, randomly chooses **one** definition (either source OR alternative)
    - Shuffles the order of definitions randomly
-   - Creates multiple-choice prompts with ALL definitions as options
+   - Creates multiple-choice prompts with same-POS definitions as options
 3. For each example sentence:
    - Marks the target word with asterisks (e.g., `*blare*`)
-   - Creates a prompt with all shuffled definitions
+   - Creates a prompt with shuffled definitions from the same POS
    - Includes "none of the above" as the final option
-   - Randomly selects which correct definition to use (source or alternative from the synset)
-4. Shuffles all training examples before training
-5. Tokenizes the prompts with a [MASK] token at the answer position
-6. Trains the model to predict the correct letter (A, B, C, etc.)
+4. Creates one "none of the above" example per word:
+   - Uses a sentence from a different POS than the most frequent one
+   - Shows only definitions from the most frequent POS
+   - Trains the model to recognize when none of the options match
+5. Shuffles all training examples before training
+6. Tokenizes the prompts with a [MASK] token at the answer position
+7. Trains the model to predict the correct letter (A, B, C, etc.)
 
 ## Usage
 
-### Training (1 epoch)
+### Basic Training (Default Settings)
 
 ```bash
 export WANDB_PROJECT=modernbert-wsd-training
 export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
-python -m training.train
+python -m training.train --max-steps 1
 ```
 
-This trains the model for 1 complete epoch over all training examples.
+This trains the model for 1 epoch with default settings.
 
-### Configuration
+### Advanced Training with Custom Configuration
 
-To adjust training parameters, modify `training/train.py`:
+The training script now supports command-line arguments for easy configuration:
 
-```python
-training_args = TrainingArguments(
-    output_dir=str(OUTPUT_DIR),
-    num_train_epochs=1,  # Number of epochs
-    per_device_train_batch_size=128,  # Batch size (adjust based on GPU memory)
-    learning_rate=3e-5,  # Learning rate
-    warmup_ratio=0.1,  # Warmup 10% of training
-    logging_steps=10,  # Log every 10 steps
-    save_strategy="epoch",  # Save at end of each epoch
-    bf16=torch.cuda.is_available(),  # Use bf16 if CUDA available
-    report_to="wandb",  # Report metrics to Weights & Biases
-)
+```bash
+python -m training.train \
+  --model "answerdotai/ModernBERT-Large-Instruct" \
+  --data-dir training/data/generated \
+  --output-dir training/output2 \
+  --batch-size 64 \
+  --learning-rate 3e-5 \
+  --num-epochs 1 \
+  --seed 42
+```
+
+#### Available Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--model` | str | `answerdotai/ModernBERT-Large-Instruct` | Model name or path |
+| `--data-dir` | Path | `training/data/generated` | Directory containing training data |
+| `--output-dir` | Path | `training/output` | Directory to save model outputs |
+| `--batch-size` | int | `64` | Training batch size per device |
+| `--learning-rate` | float | `3e-5` | Learning rate |
+| `--num-epochs` | int | `1` | Number of training epochs |
+| `--seed` | int | `42` | Random seed for reproducibility |
+
+### Examples
+
+Train for 3 epochs with larger batch size:
+```bash
+python -m training.train --num-epochs 3 --batch-size 128
+```
+
+Use a different model:
+```bash
+python -m training.train --model "bert-base-uncased"
+```
+
+Custom output directory:
+```bash
+python -m training.train --output-dir ./my-custom-model
 ```
 
 ## Output
@@ -129,19 +172,30 @@ Training metrics:
 {'train_runtime': 28.982, 'train_loss': 2.7344929377237954, 'epoch': 1.0}
 ```
 
-Note: The number of options varies by word. Words with more synsets will have more definition choices (e.g., "instill" has 10 definitions plus "none of the above").
+**Note on option counts**:
+- The number of options varies by word and POS tag
+- Only synsets with the same POS are included as options
+- Each synset contributes exactly one definition (randomly chosen from source/alternative)
+- For example, if "instill" has 5 verb synsets, there will be 5 verb definitions plus "none of the above"
 
 ## Configuration
 
-Key parameters in `train.py`:
+The training script uses the `TrainingConfig` dataclass for configuration management. Key parameters:
 
-- `MODEL_NAME`: Base model to fine-tune (default: "answerdotai/ModernBERT-Large-Instruct")
-- `num_train_epochs`: Number of training epochs (default: 1)
-- `per_device_train_batch_size`: Batch size per device (default: 128)
-- `learning_rate`: Learning rate (default: 3e-5)
-- `warmup_ratio`: Percentage of training for warmup (default: 0.1)
-- `max_length`: Maximum sequence length (default: 512)
-- `report_to`: Metrics reporting destination (default: "wandb")
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `model_name` | `answerdotai/ModernBERT-Large-Instruct` | Base model to fine-tune |
+| `data_dir` | `training/data/generated` | Directory with training data |
+| `output_dir` | `training/output` | Output directory for checkpoints |
+| `max_length` | `2048` | Maximum sequence length |
+| `num_epochs` | `1` | Number of training epochs |
+| `batch_size` | `64` | Batch size per device |
+| `learning_rate` | `3e-5` | Learning rate |
+| `warmup_ratio` | `0.1` | Percentage of training for warmup |
+| `random_seed` | `42` | Random seed for reproducibility |
+| `report_to` | `wandb` | Metrics reporting destination |
+
+These can be overridden via command-line arguments (see Usage section above).
 
 ### Using Weights & Biases
 
@@ -161,15 +215,25 @@ export WANDB_PROJECT=modernbert-wsd-training
 ## Training Details
 
 ### Data Preparation
-- Each word's definitions are shuffled randomly for variety
-- Training examples are shuffled before training starts
-- Each example randomly selects either the source or alternative definition as correct
+- **POS-based filtering**: Only definitions with the same part of speech are shown as options
+- **Single definition per synset**: Randomly chooses either source OR alternative definition
+- **Definition shuffling**: Each word's definitions are shuffled randomly for variety
+- **Example shuffling**: All training examples are shuffled before training starts
+- **"None of the above" examples**: One per word, using cross-POS confusion
 
 ### Model Architecture
 - Uses ModernBERT's masked language modeling objective
 - Predicts single-token answers (A, B, C, etc.)
-- All definitions from a word are presented as options
+- Only same-POS definitions from a word are presented as options
 - Includes "none of the above" as final option
+
+### Code Structure
+The training script is organized into modular functions:
+- `create_examples_for_synset()`: Creates training examples for a single synset
+- `create_none_of_above_example()`: Creates "none of the above" examples
+- `load_training_data()`: Orchestrates data loading
+- `WSDDataset`: PyTorch dataset for tokenization and labeling
+- `WSDDataCollator`: Custom collator for dynamic padding
 
 ### Prompt Format
 Prompts are created using `wsd.prompt.create_multiple_choice_prompt()` which formats questions as:
