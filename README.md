@@ -16,7 +16,7 @@ The application requires the following environment variable:
 
 ```shell
 export WORDNET_URL=http://127.0.0.1:8000
-uvicorn --reload wsd.server:app --port 8005 
+uvicorn --reload wsd.server:app --port 8080
 ```
 
 ### Running with Docker
