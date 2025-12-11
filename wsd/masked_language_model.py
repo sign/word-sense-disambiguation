@@ -27,7 +27,6 @@ class UnmaskResult:
 
 
 @cache
-# def load_model(model_name: str = "/home/amit/dev/sign/word-sense-disambiguation/training/output/final") -> ModelComponents:
 def load_model(model_name: str = "sign/ModernBERT-Large-Instruct-WSD") -> ModelComponents:
     if torch.cuda.is_available():
         device = "cuda"

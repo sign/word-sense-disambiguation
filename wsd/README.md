@@ -102,18 +102,20 @@ Run the benchmark:
 python wsd/benchmark.py
 ```
 
-| Device           | Model      | Time     | Accuracy | Notes                                    |
-|------------------|------------|----------|----------|------------------------------------------|
-| Macbook Pro M4   | ModernBERT | 00:36:16 | 54.0%    | Initial test                             |
-| NVIDIA DGX Spark | ModernBERT | 00:19:06 | 53.8%    | On GPU (float16)                         |
-| NVIDIA DGX Spark | ModernBERT | 00:15:05 | 54.6%    | Batched (32)                             |
-| NVIDIA DGX Spark | ModernBERT | 00:11:37 | 54.6%    | With Flash Attention                     |
-| NVIDIA DGX Spark | none       | 00:08:36 | 0%       | Just Definitions                         |
-| NVIDIA DGX Spark | none       | 00:01:02 | 0%       | Definitions Batch Endpoint               |
-| NVIDIA DGX Spark | ModernBERT | 00:03:27 | 38.5%    | Batch size 64                            |
-| NVIDIA DGX Spark | ModernBERT | 00:03:37 | 58.1%    | Prompt Optimizations                     |
-| NVIDIA DGX Spark | ModernBERT | 00:03:37 | 66.0%    | After 1 Epoch (56320 sentences, all pos) |
+| Device           | Model      | Time      | Accuracy | Notes                                    |
+|------------------|------------|-----------|----------|------------------------------------------|
+| Macbook Pro M4   | ModernBERT | 00:36:16  | 54.0%    | Initial test                             |
+| NVIDIA DGX Spark | ModernBERT | 00:19:06  | 53.8%    | On GPU (float16)                         |
+| NVIDIA DGX Spark | ModernBERT | 00:15:05  | 54.6%    | Batched (32)                             |
+| NVIDIA DGX Spark | ModernBERT | 00:11:37  | 54.6%    | With Flash Attention                     |
+| NVIDIA DGX Spark | none       | 00:08:36  | 0%       | Just Definitions                         |
+| NVIDIA DGX Spark | none       | 00:01:02  | 0%       | Definitions Batch Endpoint               |
+| NVIDIA DGX Spark | ModernBERT | 00:03:27  | 38.5%    | Batch size 64                            |
+| NVIDIA DGX Spark | ModernBERT | 00:03:37  | 58.1%    | Prompt Optimizations                     |
+| NVIDIA DGX Spark | ModernBERT | 00:03:37  | 66.0%    | After 1 Epoch (56320 sentences, all pos) |
+| NVIDIA DGX Spark | ModernBERT | 00:04:59* | 67.1%    | After 1 Epoch (300k+ sentences)          |
 
+*machine under other load, time is not reliable
 
 
 50% accuracy might seem bad. However, remember we only run it on non-trivial cases, and we expect 

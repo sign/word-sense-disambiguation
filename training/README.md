@@ -83,6 +83,7 @@ python -m training.train \
   --data-dir training/data/generated \
   --output-dir training/output2 \
   --batch-size 64 \
+  --max-length 512 \
   --learning-rate 3e-5 \
   --num-epochs 1 \
   --seed 42
