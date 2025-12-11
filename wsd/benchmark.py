@@ -1,16 +1,15 @@
-import itertools
+import random
 import re
 from dataclasses import dataclass
-import random
 
 import wn
 from tqdm import tqdm
 
 from wsd.word_sense_disambiguation import (
-    WordQuery,
     DisambiguationInput,
-    get_definitions,
+    WordQuery,
     disambiguate_word_batch,
+    get_definitions,
 )
 
 
@@ -82,14 +81,14 @@ if __name__ == "__main__":
                     marked_sentence=example.marked_text,
                     definitions=definitions
                 )
-                for example, definitions in zip(batch, all_definitions)
+                for example, definitions in zip(batch, all_definitions, strict=False)
             ]
 
             # Process entire batch at once
             predictions = disambiguate_word_batch(batch_data)
 
             # Check predictions and update accuracy
-            for i, (example, result) in enumerate(zip(batch, predictions)):
+            for i, (example, result) in enumerate(zip(batch, predictions, strict=False)):
                 is_correct = result.synset_id == example.synset_id
                 if is_correct:
                     correct += 1

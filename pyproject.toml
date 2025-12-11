@@ -2,6 +2,7 @@
 name = "wsd"
 description = "Packages for understaning word senses and entities from text (word sense disambiguation & entity linking)"
 version = "0.0.1"
+requires-python = ">=3.10"
 authors = [
     { name = "Amit Moryossef", email = "amit@sign.mt" },
 ]
@@ -20,7 +21,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "ruff"
+    "ruff",
+    "requests-mock"
 ]
 
 web = [

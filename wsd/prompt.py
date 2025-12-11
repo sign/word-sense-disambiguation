@@ -3,6 +3,12 @@ from dataclasses import dataclass
 NONE_OF_THE_ABOVE = "none of the above"
 
 
+class OptionLetterIndexError(ValueError):
+    """Raised when index is too large for option letter"""
+    def __init__(self, index: int):
+        super().__init__(f"Index too large for option letter {index}")
+
+
 @dataclass
 class Definition:
     """A single word definition from WordNet"""
@@ -25,7 +31,7 @@ def get_option_letter(index: int) -> str:
     elif index < 109:
         return chr(ord('А') + (index - 76))
     else:
-        raise ValueError(f"Index too large for option letter {index}")
+        raise OptionLetterIndexError(index)
 
 
 def create_marked_sentence(doc, target_position: int) -> str:

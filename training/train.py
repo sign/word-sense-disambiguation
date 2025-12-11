@@ -15,18 +15,17 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import Dataset
 from transformers import (
     AutoModelForMaskedLM,
     AutoTokenizer,
     PreTrainedTokenizer,
-    TrainingArguments,
     Trainer,
+    TrainingArguments,
 )
 
 from wsd.prompt import Definition, create_multiple_choice_prompt, get_option_letter
-
 
 # Constants
 DEFAULT_MODEL = "answerdotai/ModernBERT-Large-Instruct"
@@ -255,8 +254,8 @@ def load_training_data(data_dir: Path, tokenizer: PreTrainedTokenizer) -> list[T
         try:
             with open(json_file) as f:
                 synsets = json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
-            warnings.warn(f"Failed to load {json_file}: {e}")
+        except (OSError, json.JSONDecodeError) as e:
+            warnings.warn(f"Failed to load {json_file}: {e}", stacklevel=2)
             continue
 
         if not synsets:
@@ -283,7 +282,12 @@ def load_training_data(data_dir: Path, tokenizer: PreTrainedTokenizer) -> list[T
 class WSDDataset(Dataset):
     """Dataset for word sense disambiguation training."""
 
-    def __init__(self, examples: list[TrainingExample], tokenizer: PreTrainedTokenizer, max_length: int = DEFAULT_MAX_LENGTH):
+    def __init__(
+        self,
+        examples: list[TrainingExample],
+        tokenizer: PreTrainedTokenizer,
+        max_length: int = DEFAULT_MAX_LENGTH
+    ):
         """
         Initialize the dataset.
 
@@ -328,7 +332,8 @@ class WSDDataset(Dataset):
         if not mask_token_positions:
             warnings.warn(
                 f"No mask token found in prompt for example {idx} "
-                f"(word: {example.word}). This example will be skipped during training."
+                f"(word: {example.word}). This example will be skipped during training.",
+                stacklevel=2
             )
         else:
             labels[mask_token_positions[0]] = answer_token_id
@@ -447,7 +452,12 @@ def main():
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Training batch size")
     parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate")
     parser.add_argument("--num-epochs", type=int, default=1, help="Number of training epochs")
-    parser.add_argument("--max-steps", type=int, default=-1, help="Maximum number of training steps (-1 for no limit, useful for debugging)")
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=-1,
+        help="Maximum number of training steps (-1 for no limit, useful for debugging)"
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_RANDOM_SEED, help="Random seed")
     args = parser.parse_args()
 

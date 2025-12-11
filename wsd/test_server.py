@@ -155,7 +155,7 @@ def test_e2e_disambiguate_endpoint(server):
 
     # If confidence is not None, it should be a valid number
     if technology_token['confidence'] is not None:
-        assert isinstance(technology_token['confidence'], (int, float))
+        assert isinstance(technology_token['confidence'], int | float)
         assert 0.0 <= technology_token['confidence'] <= 1.0
 
     # Validate first entity exactly

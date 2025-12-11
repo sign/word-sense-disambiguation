@@ -1,23 +1,23 @@
 import pytest
 import requests_mock
 
+from wsd.env import WORDNET_URL
+from wsd.masked_language_model import load_model
 from wsd.word_sense_disambiguation import (
-    WordQuery,
+    NO_DEFINITIONS_FOUND,
+    NONE_OF_THE_ABOVE,
     Definition,
     DisambiguationInput,
     DisambiguationResult,
-    get_definitions,
-    get_definitions_single,
+    WordQuery,
     create_marked_sentence,
     create_multiple_choice_prompt,
-    get_choice_probabilities,
     disambiguate_word,
     disambiguate_word_batch,
-    NO_DEFINITIONS_FOUND,
-    NONE_OF_THE_ABOVE,
+    get_choice_probabilities,
+    get_definitions,
+    get_definitions_single,
 )
-from wsd.env import WORDNET_URL
-from wsd.masked_language_model import load_model
 
 
 def test_word_query_dataclass():
@@ -142,8 +142,8 @@ def test_get_definitions_single():
 
 def test_create_marked_sentence(monkeypatch):
     """Test create_marked_sentence function"""
+
     import spacy
-    from unittest.mock import Mock
 
     # Create a mock spacy doc
     nlp = spacy.blank("en")
@@ -170,9 +170,9 @@ def test_create_multiple_choice_prompt():
     )
 
     assert "bank" in prompt.lower()
-    assert "A: a financial institution" in prompt
-    assert "B: the edge of a river" in prompt
-    assert f"C: {NONE_OF_THE_ABOVE}" in prompt
+    assert "A. a financial institution" in prompt
+    assert "B. the edge of a river" in prompt
+    assert f"C. {NONE_OF_THE_ABOVE}" in prompt
     assert components.tokenizer.mask_token in prompt
 
 

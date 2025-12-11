@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from functools import cache
-from typing import Optional
 
 import requests
 import spacy
@@ -8,11 +7,22 @@ from colorama import Fore, Style, init
 
 from wsd.env import WORDNET_URL
 from wsd.masked_language_model import load_model, unmask_token, unmask_token_batch
-from wsd.prompt import Definition, get_option_letter, create_multiple_choice_prompt, NONE_OF_THE_ABOVE, \
-    create_marked_sentence
+from wsd.prompt import (
+    NONE_OF_THE_ABOVE,
+    Definition,
+    create_marked_sentence,
+    create_multiple_choice_prompt,
+    get_option_letter,
+)
 
 # Constants
 NO_DEFINITIONS_FOUND = "No definitions found"
+
+
+class APIResponseError(ValueError):
+    """Raised when API response doesn't match expected format"""
+    def __init__(self, received: int, expected: int):
+        super().__init__(f"API response has {received} items but expected {expected} queries")
 
 
 @dataclass
@@ -31,9 +41,9 @@ class DisambiguatedToken:
     position: int
     start_char: int
     end_char: int
-    synset_id: Optional[str] = None
-    synset_definition: Optional[str] = None
-    confidence: Optional[float] = None
+    synset_id: str | None = None
+    synset_definition: str | None = None
+    confidence: float | None = None
 
 
 @dataclass
@@ -42,8 +52,8 @@ class Entity:
     start_token: int
     end_token: int
     text: str
-    description: Optional[str] = None
-    url: Optional[str] = None
+    description: str | None = None
+    url: str | None = None
 
 
 @dataclass
@@ -82,6 +92,12 @@ def get_spacy_pipeline(language: str = "en"):
 
     msg = f"Language '{language}' not supported"
     raise ValueError(msg)
+
+
+def _validate_response_length(results: list, queries: list[WordQuery]) -> None:
+    """Validate that API response has correct number of items"""
+    if len(results) < len(queries):
+        raise APIResponseError(received=len(results), expected=len(queries))
 
 
 def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
@@ -125,15 +141,14 @@ def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list
                 definitions.append(Definition(synset_id=synset_id, definition=definition_text))
             results.append(definitions)
 
-        # If response doesn't have enough items, pad with empty lists
-        if len(results) < len(queries):
-            raise ValueError(f"API response has {len(results)} items but expected {len(queries)} queries")
+        # Validate response has correct number of items
+        _validate_response_length(results, queries)
 
-        return results
-
-    except (requests.RequestException, ValueError) as e:
+    except (requests.RequestException, APIResponseError) as e:
         print(f"Error making batch request to {url}: {e}")
         return [[] for _ in queries]
+    else:
+        return results
 
 
 def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
@@ -376,13 +391,9 @@ def disambiguate_word_batch(
     return results
 
 
-def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
-    nlp = get_spacy_pipeline(language)
-    doc = nlp(text)
-    tokens = []
-    entities = []
-
-    pos_map = {
+def _get_pos_map() -> dict[str, str]:
+    """Get mapping from spaCy POS tags to WordNet POS tags"""
+    return {
         # n
         'NOUN': 'n',
         'PROPN': 'n',
@@ -396,8 +407,13 @@ def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
         'ADV': 'r',
     }
 
-    # First pass: Create all base tokens and identify content words to disambiguate
+
+def _create_base_tokens(doc) -> tuple[list[DisambiguatedToken], list[int]]:
+    """Create base tokens and identify content word indices"""
+    tokens = []
     content_word_indices = []
+    pos_map = _get_pos_map()
+
     for token in doc:
         # Create base token info
         disambiguated_token = DisambiguatedToken(
@@ -414,46 +430,55 @@ def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
         if token.pos_ in pos_map and not token.is_punct and not token.is_space:
             content_word_indices.append(token.i)
 
-    # Batch fetch definitions for all content words
-    if content_word_indices:
-        queries = [
-            WordQuery(form=tokens[i].lemma, pos=pos_map[tokens[i].pos])
-            for i in content_word_indices
-        ]
-        all_definitions = get_definitions(queries, language)
+    return tokens, content_word_indices
 
-        # Prepare batch data for disambiguation
-        batch_data = []
-        valid_indices = []  # Track which content words have definitions
-        for idx, definitions in zip(content_word_indices, all_definitions):
-            if definitions:
-                marked_sentence = create_marked_sentence(doc, idx)
-                batch_data.append(
-                    DisambiguationInput(
-                        word=tokens[idx].word,
-                        marked_sentence=marked_sentence,
-                        definitions=definitions
-                    )
+
+def _prepare_disambiguation_batch(
+    doc,
+    tokens: list[DisambiguatedToken],
+    content_word_indices: list[int],
+    all_definitions: list[list[Definition]]
+) -> tuple[list[DisambiguationInput], list[int]]:
+    """Prepare batch data for disambiguation"""
+    batch_data = []
+    valid_indices = []
+
+    for idx, definitions in zip(content_word_indices, all_definitions, strict=False):
+        if definitions:
+            marked_sentence = create_marked_sentence(doc, idx)
+            batch_data.append(
+                DisambiguationInput(
+                    word=tokens[idx].word,
+                    marked_sentence=marked_sentence,
+                    definitions=definitions
                 )
-                valid_indices.append(idx)
+            )
+            valid_indices.append(idx)
 
-        # Batch disambiguate all content words with definitions
-        if batch_data:
-            predictions = disambiguate_word_batch(batch_data)
+    return batch_data, valid_indices
 
-            # Update tokens with disambiguation results
-            for token_idx, result in zip(valid_indices, predictions):
-                # Handle "none of the above" case
-                if result.definition == NONE_OF_THE_ABOVE:
-                    tokens[token_idx].synset_id = None
-                    tokens[token_idx].synset_definition = None
-                    tokens[token_idx].confidence = result.confidence
-                else:
-                    tokens[token_idx].synset_id = result.synset_id
-                    tokens[token_idx].synset_definition = result.definition
-                    tokens[token_idx].confidence = result.confidence
 
-    # Extract linked entities using entityLinker
+def _update_tokens_with_results(
+    tokens: list[DisambiguatedToken],
+    valid_indices: list[int],
+    predictions: list[DisambiguationResult]
+) -> None:
+    """Update tokens with disambiguation results"""
+    for token_idx, result in zip(valid_indices, predictions, strict=False):
+        # Handle "none of the above" case
+        if result.definition == NONE_OF_THE_ABOVE:
+            tokens[token_idx].synset_id = None
+            tokens[token_idx].synset_definition = None
+            tokens[token_idx].confidence = result.confidence
+        else:
+            tokens[token_idx].synset_id = result.synset_id
+            tokens[token_idx].synset_definition = result.definition
+            tokens[token_idx].confidence = result.confidence
+
+
+def _extract_entities(doc) -> list[Entity]:
+    """Extract linked entities from spaCy doc"""
+    entities = []
     if hasattr(doc._, 'linkedEntities'):
         for ent in doc._.linkedEntities:
             span = ent.get_span()
@@ -466,6 +491,37 @@ def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
                 url=ent.url
             )
             entities.append(entity)
+    return entities
+
+
+def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
+    nlp = get_spacy_pipeline(language)
+    doc = nlp(text)
+    pos_map = _get_pos_map()
+
+    # First pass: Create all base tokens and identify content words to disambiguate
+    tokens, content_word_indices = _create_base_tokens(doc)
+
+    # Batch fetch definitions for all content words
+    if content_word_indices:
+        queries = [
+            WordQuery(form=tokens[i].lemma, pos=pos_map[tokens[i].pos])
+            for i in content_word_indices
+        ]
+        all_definitions = get_definitions(queries, language)
+
+        # Prepare batch data for disambiguation
+        batch_data, valid_indices = _prepare_disambiguation_batch(
+            doc, tokens, content_word_indices, all_definitions
+        )
+
+        # Batch disambiguate all content words with definitions
+        if batch_data:
+            predictions = disambiguate_word_batch(batch_data)
+            _update_tokens_with_results(tokens, valid_indices, predictions)
+
+    # Extract linked entities using entityLinker
+    entities = _extract_entities(doc)
 
     return WordSenseDisambiguation(tokens=tokens, entities=entities)
 

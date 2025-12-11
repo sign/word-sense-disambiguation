@@ -113,7 +113,11 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
 
 def main():
     components = load_model()
-    text = f"Answer 'Yes' or 'No'.\nQUESTION: Is Paris the capital of France?\nANSWER: [unused0] {components.tokenizer.mask_token}"
+    text = (
+        f"Answer 'Yes' or 'No'.\n"
+        f"QUESTION: Is Paris the capital of France?\n"
+        f"ANSWER: [unused0] {components.tokenizer.mask_token}"
+    )
 
     # Single example
     start_time = time.time()
@@ -158,7 +162,7 @@ def main():
     results = unmask_token_batch(texts)
     batch_time = time.time() - start_time
 
-    for i, (text_input, result) in enumerate(zip(texts, results)):
+    for i, (text_input, result) in enumerate(zip(texts, results, strict=False)):
         # Extract the question from the text
         question_line = text_input.split('\n')[1]
         print(f"\n{i+1}. {question_line}")

@@ -3,10 +3,10 @@ import torch
 
 from wsd.masked_language_model import (
     PromptMaskError,
+    UnmaskResult,
     load_model,
     unmask_token,
     unmask_token_batch,
-    UnmaskResult,
 )
 
 
@@ -73,8 +73,16 @@ def test_unmask_token_batch_basic():
     """Test batch processing with multiple texts"""
     components = load_model()
     texts = [
-        f"Answer 'Yes' or 'No'.\nQUESTION: Is Paris the capital of France?\nANSWER: [unused0] {components.tokenizer.mask_token}",
-        f"Answer 'Yes' or 'No'.\nQUESTION: Is London the capital of Germany?\nANSWER: [unused0] {components.tokenizer.mask_token}",
+        (
+            f"Answer 'Yes' or 'No'.\n"
+            f"QUESTION: Is Paris the capital of France?\n"
+            f"ANSWER: [unused0] {components.tokenizer.mask_token}"
+        ),
+        (
+            f"Answer 'Yes' or 'No'.\n"
+            f"QUESTION: Is London the capital of Germany?\n"
+            f"ANSWER: [unused0] {components.tokenizer.mask_token}"
+        ),
     ]
 
     results = unmask_token_batch(texts)
@@ -99,7 +107,11 @@ def test_unmask_token_batch_single_item():
     """Test batch processing with single item"""
     components = load_model()
     texts = [
-        f"Answer 'Yes' or 'No'.\nQUESTION: Is Paris the capital of France?\nANSWER: [unused0] {components.tokenizer.mask_token}"
+        (
+            f"Answer 'Yes' or 'No'.\n"
+            f"QUESTION: Is Paris the capital of France?\n"
+            f"ANSWER: [unused0] {components.tokenizer.mask_token}"
+        )
     ]
 
     results = unmask_token_batch(texts)
@@ -130,8 +142,16 @@ def test_unmask_token_batch_consistency():
     """Test that batch processing produces same results as sequential processing"""
     components = load_model()
     texts = [
-        f"Answer 'Yes' or 'No'.\nQUESTION: Is Paris the capital of France?\nANSWER: [unused0] {components.tokenizer.mask_token}",
-        f"Answer 'Yes' or 'No'.\nQUESTION: Is London the capital of Germany?\nANSWER: [unused0] {components.tokenizer.mask_token}",
+        (
+            f"Answer 'Yes' or 'No'.\n"
+            f"QUESTION: Is Paris the capital of France?\n"
+            f"ANSWER: [unused0] {components.tokenizer.mask_token}"
+        ),
+        (
+            f"Answer 'Yes' or 'No'.\n"
+            f"QUESTION: Is London the capital of Germany?\n"
+            f"ANSWER: [unused0] {components.tokenizer.mask_token}"
+        ),
     ]
 
     # Get batch results
@@ -141,7 +161,7 @@ def test_unmask_token_batch_consistency():
     sequential_results = [unmask_token(text) for text in texts]
 
     # Compare tokens
-    for batch_result, seq_result in zip(batch_results, sequential_results):
+    for batch_result, seq_result in zip(batch_results, sequential_results, strict=False):
         assert batch_result.token == seq_result.token
 
 
