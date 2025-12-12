@@ -9,11 +9,11 @@ os.environ["WORDNET_URL"] = "NONE"
 from wsd.word_sense_disambiguation import disambiguate_word, get_spacy_pipeline
 
 # Download spaCy entities knowledge base (600MB~)
+print("Priming spaCy model...")
 nlp = get_spacy_pipeline()
 nlp("Apple is a technology company.")
 
 # Download HuggingFace Language model
+print("Priming WSD model...")
 load_model()
-
-# Make sure disambiguation runs
 disambiguate_word("Apple", "Apple is a technology company.", [])

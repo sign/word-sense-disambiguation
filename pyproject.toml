@@ -27,7 +27,7 @@ dev = [
 ]
 
 web = [
-    "uvicorn",
+    "gunicorn",
     "starlette"
 ]
 
