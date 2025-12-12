@@ -20,9 +20,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
     "ruff",
-    "requests-mock"
+    "requests-mock",
+    "pytest",
+    "pytest-xdist", # For parallel test execution
 ]
 
 web = [

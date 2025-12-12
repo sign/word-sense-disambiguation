@@ -14,16 +14,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
+      - uses: actions/checkout@v6
 
-      - name: Install Requirements
-        run: pip install ".[dev,web]"
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          activate-environment: true
+
+      - name: Install dependencies
+        run: uv pip install ".[dev,web]"
 
       - name: Test Code
-        run: pytest .
+        run: uv run pytest -n auto --dist loadscope
         env:
           WORDNET_URL: ${{ vars.WORDNET_URL }}
