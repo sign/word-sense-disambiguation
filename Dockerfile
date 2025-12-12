@@ -20,4 +20,4 @@ COPY wsd/ ./wsd/
 RUN python -m wsd.prime
 
 # Command to run the application
-CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 wsd.server:app
+CMD python -m uvicorn wsd.server:app --host 0.0.0.0 --port $PORT
