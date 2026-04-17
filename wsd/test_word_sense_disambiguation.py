@@ -1,9 +1,9 @@
 import pytest
 import requests_mock
+import torch
 
 from wsd.env import WORDNET_URL
 from wsd.masked_language_model import load_model
-from wsd.prompt import NOTA_LETTER_INDEX, get_option_letter
 from wsd.word_sense_disambiguation import (
     NO_DEFINITIONS_FOUND,
     NONE_OF_THE_ABOVE,
@@ -167,42 +167,42 @@ def test_create_multiple_choice_prompt():
         "bank",
         components.tokenizer.mask_token,
         "I went to the *bank*.",
-        definitions
+        definitions,
+        components.tokenizer,
     )
 
+    from wsd.letters import NOTA_LETTER_INDEX, build_letters
+    nota_letter = build_letters(components.tokenizer).letters[NOTA_LETTER_INDEX]
     assert "bank" in prompt.lower()
     assert "A. a financial institution" in prompt
     assert "B. the edge of a river" in prompt
-    # NOTA is pinned to the reserved letter, not the next sequential letter.
-    nota_letter = get_option_letter(NOTA_LETTER_INDEX)
     assert f"{nota_letter}. {NONE_OF_THE_ABOVE}" in prompt
     assert components.tokenizer.mask_token in prompt
 
 
 def test_get_choice_probabilities():
     """Test get_choice_probabilities function"""
-    import torch
-    components = load_model()
-
-    # Create mock probabilities
-    vocab_size = components.tokenizer.vocab_size
-    probs = torch.zeros(vocab_size)
-
-    # Set high probability for 'A' token
-    a_token_id = components.tokenizer.convert_tokens_to_ids("A")
-    if a_token_id is not None:
-        probs[a_token_id] = 0.8
+    # Compact probs: letter_i is at index i. The NOTA slot lives at the fixed
+    # NOTA_LETTER_INDEX, NOT at index len(definitions).
+    from wsd.letters import NOTA_LETTER_INDEX
+    probs = torch.zeros(128)
+    probs[0] = 0.8
+    probs[1] = 0.1
+    probs[NOTA_LETTER_INDEX] = 0.05
 
     definitions = [
         Definition(synset_id="omw-en-1234-n", definition="definition 1"),
         Definition(synset_id="omw-en-5678-n", definition="definition 2"),
     ]
 
-    choice_probs = get_choice_probabilities(components.tokenizer, probs, definitions)
+    choice_probs = get_choice_probabilities(probs, definitions)
 
-    # Should return probabilities for A, B, and C (none of the above)
+    # Two option probs plus NOTA
     assert len(choice_probs) == 3
     assert all(isinstance(p, float) for p in choice_probs)
+    assert choice_probs[0] == pytest.approx(0.8)
+    assert choice_probs[1] == pytest.approx(0.1)
+    assert choice_probs[2] == pytest.approx(0.05)
 
 
 def test_disambiguate_word_no_definitions():

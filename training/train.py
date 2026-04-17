@@ -18,19 +18,21 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 from transformers import (
-    AutoModelForMaskedLM,
     AutoTokenizer,
     PreTrainedTokenizer,
     Trainer,
     TrainingArguments,
 )
 
+from training.wn_data import WordNetExample
+from training.wn_data import split as split_wn_examples
+from wsd.letters import NOTA_LETTER_INDEX, LetterSet, build_letters
+from wsd.model import WSDModernBertForMaskedLM
+from wsd.model_surgery import prune_decoder
 from wsd.prompt import (
-    NOTA_LETTER_INDEX,
     Definition,
     WordNotFoundError,
     create_multiple_choice_prompt,
-    get_option_letter,
     mark_word_in_sentence,
 )
 
@@ -61,6 +63,9 @@ class TrainingConfig:
     random_seed: int = DEFAULT_RANDOM_SEED
     report_to: str = "wandb"
     max_steps: int = -1  # -1 means no limit (train full epochs)
+    eval_steps: int = 500  # run eval every N steps
+    eval_wn_count: int = 1000  # held-out wn examples used as eval set
+    eval_wn_seed: int = 42  # seed controlling wn eval/benchmark split
     weight_decay: float = DEFAULT_WEIGHT_DECAY
     label_smoothing: float = DEFAULT_LABEL_SMOOTHING
     lr_scheduler: str = DEFAULT_LR_SCHEDULER
@@ -130,21 +135,21 @@ def create_examples_for_synset(
         try:
             marked_sentence = mark_word_in_sentence(sentence, word)
         except WordNotFoundError:
-            # Skip sentences where the target word can't be located as a whole
-            # word. The previous implementation silently returned the sentence
-            # unmarked, which produced training examples with no marked span.
+            # Sentence doesn't contain the word with clean word boundaries
+            # (e.g. "100" inside "100th"); skip so training matches inference.
             continue
 
         # Find correct answer after shuffling
         correct_original_idx = synset_to_definition[synset_id]
         correct_shuffled_idx = index_mapping[correct_original_idx]
-        correct_letter = get_option_letter(correct_shuffled_idx)
+        correct_letter = build_letters(tokenizer).letters[correct_shuffled_idx]
 
         prompt = create_multiple_choice_prompt(
             word=word,
             mask_token=tokenizer.mask_token,
             marked_sentence=marked_sentence,
-            definitions=shuffled_definitions
+            definitions=shuffled_definitions,
+            tokenizer=tokenizer,
         )
 
         examples.append(TrainingExample(
@@ -186,13 +191,25 @@ def create_none_of_above_example(
     if not other_pos_synsets:
         return None
 
-    # Pick a random synset and sentence from a different POS
-    chosen_synset = random.choice(other_pos_synsets)
-    chosen_sentence = random.choice(chosen_synset["examples"])
-    try:
-        marked_sentence = mark_word_in_sentence(chosen_sentence, word)
-    except WordNotFoundError:
-        # The chosen sentence doesn't contain the target word as a whole word.
+    # Pick a random synset+sentence from a different POS where the word appears
+    # with clean word boundaries. If no valid sentence exists across any of the
+    # other-POS synsets, we cannot build a faithful "none of the above" example.
+    candidate_sentences = [
+        (s, ex) for s in other_pos_synsets for ex in s["examples"]
+    ]
+    random.shuffle(candidate_sentences)
+    chosen_synset = None
+    chosen_sentence = None
+    marked_sentence = None
+    for s, ex in candidate_sentences:
+        try:
+            marked_sentence = mark_word_in_sentence(ex, word)
+        except WordNotFoundError:
+            continue
+        chosen_synset = s
+        chosen_sentence = ex
+        break
+    if marked_sentence is None:
         return None
 
     # Collect definitions only from the most frequent POS tag
@@ -209,14 +226,15 @@ def create_none_of_above_example(
 
     random.shuffle(frequent_pos_definitions)
 
-    # The correct answer is "none of the above" — always the reserved NOTA letter.
-    none_letter = get_option_letter(NOTA_LETTER_INDEX)
+    # The correct answer is "none of the above" — always the fixed NOTA letter.
+    none_letter = build_letters(tokenizer).letters[NOTA_LETTER_INDEX]
 
     prompt = create_multiple_choice_prompt(
         word=word,
         mask_token=tokenizer.mask_token,
         marked_sentence=marked_sentence,
-        definitions=frequent_pos_definitions
+        definitions=frequent_pos_definitions,
+        tokenizer=tokenizer,
     )
 
     return TrainingExample(
@@ -227,6 +245,70 @@ def create_none_of_above_example(
         correct_answer_letter=none_letter,
         prompt=prompt
     )
+
+
+def build_eval_examples_from_wn(
+    wn_examples: list[WordNetExample],
+    tokenizer: PreTrainedTokenizer,
+) -> list[TrainingExample]:
+    """Convert :class:`WordNetExample` objects into :class:`TrainingExample` objects.
+
+    Mirrors the benchmark's definition-lookup path: for each example, fetch all
+    synset definitions for ``(lemma, pos)`` via the wn library, sort by
+    ``synset_id`` and position the correct answer at the letter matching the
+    correct synset's index. Skips examples where the correct synset isn't among
+    the fetched definitions (can happen when the wn lexicon disagrees with the
+    example's own synset metadata), and any where we'd exceed the letter budget.
+    """
+    import wn as _wn
+
+    try:
+        en = _wn.Wordnet(lexicon="omw-en:1.4")
+    except _wn.Error:
+        _wn.download("omw-en:1.4")
+        en = _wn.Wordnet(lexicon="omw-en:1.4")
+
+    pos_a_and_s = {"a", "s"}
+    letters = build_letters(tokenizer).letters
+    max_definitions = len(letters) - 1  # last letter reserved for "none of the above"
+
+    out: list[TrainingExample] = []
+    for ex in wn_examples:
+        pos_options = pos_a_and_s if ex.pos == "a" else {ex.pos}
+        defs: dict[str, str] = {}
+        for word in en.words(form=ex.lemma):
+            for synset in word.synsets():
+                if synset.pos not in pos_options:
+                    continue
+                text = synset.definition()
+                if text:
+                    defs[synset.id] = text
+        if ex.synset_id not in defs:
+            continue
+        if len(defs) > max_definitions:
+            continue
+        sorted_ids = sorted(defs)
+        definitions = [
+            Definition(synset_id=sid, definition=defs[sid]) for sid in sorted_ids
+        ]
+        correct_idx = sorted_ids.index(ex.synset_id)
+        correct_letter = letters[correct_idx]
+        prompt = create_multiple_choice_prompt(
+            word=ex.word_form,
+            mask_token=tokenizer.mask_token,
+            marked_sentence=ex.marked_text,
+            definitions=definitions,
+            tokenizer=tokenizer,
+        )
+        out.append(TrainingExample(
+            word=ex.word_form,
+            sentence=ex.sentence,
+            marked_sentence=ex.marked_text,
+            correct_synset_id=ex.synset_id,
+            correct_answer_letter=correct_letter,
+            prompt=prompt,
+        ))
+    return out
 
 
 def load_training_data(data_dir: Path, tokenizer: PreTrainedTokenizer) -> list[TrainingExample]:
@@ -287,6 +369,7 @@ class WSDDataset(Dataset):
         self,
         examples: list[TrainingExample],
         tokenizer: PreTrainedTokenizer,
+        letter_set: LetterSet,
         max_length: int = DEFAULT_MAX_LENGTH
     ):
         """
@@ -295,10 +378,12 @@ class WSDDataset(Dataset):
         Args:
             examples: List of training examples
             tokenizer: The tokenizer to use
+            letter_set: Mapping from compact answer ids to letters/token ids
             max_length: Maximum sequence length
         """
         self.examples = examples
         self.tokenizer = tokenizer
+        self.letter_to_compact = {letter: i for i, letter in enumerate(letter_set.letters)}
         self.max_length = max_length
 
     def __len__(self) -> int:
@@ -314,11 +399,8 @@ class WSDDataset(Dataset):
             max_length=self.max_length,
         )
 
-        # Get the token ID for the correct answer letter
-        answer_token_id = self.tokenizer.encode(
-            example.correct_answer_letter,
-            add_special_tokens=False
-        )[0]
+        # Compact id (index into LetterSet) for the correct answer letter.
+        answer_compact_id = self.letter_to_compact[example.correct_answer_letter]
 
         # Find the mask token position
         input_ids = encoding["input_ids"]
@@ -337,7 +419,7 @@ class WSDDataset(Dataset):
                 stacklevel=2
             )
         else:
-            labels[mask_token_positions[0]] = answer_token_id
+            labels[mask_token_positions[0]] = answer_compact_id
 
         return {
             "input_ids": input_ids,
@@ -460,6 +542,14 @@ def main():
         help="Maximum number of training steps (-1 for no limit, useful for debugging)"
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_RANDOM_SEED, help="Random seed")
+    parser.add_argument("--report-to", type=str, default=TrainingConfig.report_to,
+                        help="Where Trainer should log (e.g. 'wandb', 'none')")
+    parser.add_argument("--freeze-embeddings", action="store_true",
+                        help="Freeze the input embedding layer (~51M params)")
+    parser.add_argument("--eval-steps", type=int, default=TrainingConfig.eval_steps,
+                        help="Run eval every N steps")
+    parser.add_argument("--eval-wn-count", type=int, default=TrainingConfig.eval_wn_count,
+                        help="Hold out this many wn benchmark examples as the eval set (0 disables eval)")
     parser.add_argument(
         "--weight-decay",
         type=float,
@@ -490,6 +580,9 @@ def main():
         num_epochs=args.num_epochs,
         max_steps=args.max_steps,
         random_seed=args.seed,
+        report_to=args.report_to,
+        eval_steps=args.eval_steps,
+        eval_wn_count=args.eval_wn_count,
         weight_decay=args.weight_decay,
         label_smoothing=args.label_smoothing,
         lr_scheduler=args.lr_scheduler,
@@ -505,11 +598,37 @@ def main():
     # Load model and tokenizer
     print(f"Loading model and tokenizer: {config.model_name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
-    model = AutoModelForMaskedLM.from_pretrained(
+    model = WSDModernBertForMaskedLM.from_pretrained(
         config.model_name,
         device_map="auto",
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
     )
+
+    # If we loaded a pristine checkpoint the decoder is still full-vocab; prune
+    # it down to the 128 answer-letter rows. When resuming from a previously
+    # pruned checkpoint the decoder already has 128 outputs and we skip prune.
+    letter_set = build_letters(tokenizer)
+    if model.decoder.out_features != len(letter_set.letters):
+        letter_set = prune_decoder(model, tokenizer)
+        print(
+            f"Pruned decoder to {len(letter_set.letters)} output tokens: "
+            f"{''.join(letter_set.letters[:32])}..."
+        )
+    else:
+        print(f"Loaded pre-pruned checkpoint with {len(letter_set.letters)} output tokens")
+
+    # Optionally freeze the input embedding layer (~51M params on ModernBERT).
+    if args.freeze_embeddings:
+        frozen = 0
+        for p in model.model.embeddings.parameters():
+            p.requires_grad = False
+            frozen += p.numel()
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in model.parameters())
+        print(
+            f"Froze embeddings: {frozen/1e6:.1f}M params frozen; "
+            f"trainable {trainable/1e6:.1f}M / total {total/1e6:.1f}M"
+        )
 
     if hasattr(model, 'hf_device_map'):
         print(f"\nModel device map: {model.hf_device_map}")
@@ -523,26 +642,62 @@ def main():
     random.shuffle(training_examples)
     print(f"Shuffled {len(training_examples)} training examples")
 
-    # Create dataset and data collator
-    dataset = WSDDataset(training_examples, tokenizer, config.max_length)
+    # Use a deterministic slice of the wn benchmark set as the eval split.
+    # Because benchmark_local.py uses the same split/seed and skips the held-out
+    # slice, eval metrics track final benchmark accuracy without leaking.
+    if config.eval_wn_count > 0:
+        wn_eval, _ = split_wn_examples(
+            n_eval=config.eval_wn_count,
+            seed=config.eval_wn_seed,
+        )
+        eval_examples = build_eval_examples_from_wn(wn_eval, tokenizer)
+        print(
+            f"Held out {len(eval_examples)} wn examples as eval "
+            f"(requested {config.eval_wn_count}, seed {config.eval_wn_seed})"
+        )
+    else:
+        eval_examples = []
+
+    # Create datasets and data collator
+    train_dataset = WSDDataset(training_examples, tokenizer, letter_set, config.max_length)
+    eval_dataset = (
+        WSDDataset(eval_examples, tokenizer, letter_set, config.max_length)
+        if eval_examples else None
+    )
     data_collator = WSDDataCollator(tokenizer)
 
     # Print a sample example
     if training_examples:
         print_sample_example(training_examples[0])
 
-    # Training arguments
+    # Accuracy on the held-out eval set, measured only at mask positions.
+    # preprocess_logits_for_metrics keeps only the argmax per position so we
+    # don't accumulate (N, L, V) logits across the entire eval set.
+    def preprocess_logits_for_metrics(logits, labels):
+        return logits.argmax(dim=-1)
+
+    def compute_metrics(eval_pred):
+        predictions, labels = eval_pred  # predictions already argmax'd
+        mask = labels != -100
+        correct = ((predictions == labels) & mask).sum()
+        total = mask.sum()
+        return {"accuracy": float(correct) / max(int(total), 1)}
+
+    eval_enabled = eval_dataset is not None
     training_args = TrainingArguments(
         output_dir=str(config.output_dir),
         num_train_epochs=config.num_epochs,
         max_steps=config.max_steps,
         per_device_train_batch_size=config.batch_size,
+        per_device_eval_batch_size=config.batch_size,
         learning_rate=config.learning_rate,
         warmup_ratio=config.warmup_ratio,
         weight_decay=config.weight_decay,
         label_smoothing_factor=config.label_smoothing,
         lr_scheduler_type=config.lr_scheduler,
         logging_steps=10,
+        eval_strategy="steps" if eval_enabled else "no",
+        eval_steps=config.eval_steps if eval_enabled else None,
         save_strategy="epoch" if config.max_steps == -1 else "steps",
         save_total_limit=1,
         bf16=torch.cuda.is_available(),
@@ -554,9 +709,12 @@ def main():
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=dataset,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=data_collator,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
+        compute_metrics=compute_metrics if eval_enabled else None,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics if eval_enabled else None,
     )
 
     # Print training info
@@ -582,6 +740,17 @@ def main():
     print(f"Saving final model to: {final_model_path}")
     trainer.save_model(str(final_model_path))
     tokenizer.save_pretrained(str(final_model_path))
+
+    # Save the answer-letter sidecar so consumers can decode compact ids without
+    # re-running the tokenizer heuristic.
+    sidecar = final_model_path / "answer_letters.json"
+    with open(sidecar, "w") as f:
+        json.dump({
+            "letters": list(letter_set.letters),
+            "token_ids_in_source_tokenizer": list(letter_set.token_ids),
+            "num_letters": len(letter_set.letters),
+        }, f, indent=2)
+    print(f"Wrote answer-letter sidecar to: {sidecar}")
     print("Done!")
 
 

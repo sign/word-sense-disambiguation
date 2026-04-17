@@ -6,14 +6,13 @@ import spacy
 from colorama import Fore, Style, init
 
 from wsd.env import WORDNET_URL
+from wsd.letters import NOTA_LETTER_INDEX
 from wsd.masked_language_model import load_model, unmask_token, unmask_token_batch
 from wsd.prompt import (
     NONE_OF_THE_ABOVE,
-    NOTA_LETTER_INDEX,
     Definition,
     create_marked_sentence,
     create_multiple_choice_prompt,
-    get_option_letter,
 )
 
 # Constants
@@ -219,39 +218,16 @@ def get_definitions_single(word: str, pos: str, language: str = "en") -> list[De
     return results[0] if results else []
 
 
-def get_choice_probabilities(tokenizer, probs, definitions: list[Definition]) -> list[float]:
-    """Get probabilities for all choice letters including 'none of the above'"""
-    choice_probs = []
-    vocab_size = len(probs)
+def get_choice_probabilities(probs, definitions: list[Definition]) -> list[float]:
+    """Get probabilities for all choice letters including 'none of the above'.
 
-    # Get probabilities for definition choices A, B, C, etc.
-    for i in range(len(definitions)):
-        letter = get_option_letter(i)
-
-        # Get probabilities for both "A" and " A" tokens and sum them
-        letter_token_id = tokenizer.convert_tokens_to_ids(letter)
-        space_letter_token_id = tokenizer.convert_tokens_to_ids(f" {letter}")
-
-        total_prob = 0.0
-        if letter_token_id is not None and letter_token_id < vocab_size:
-            total_prob += probs[letter_token_id].item()
-        if space_letter_token_id is not None and space_letter_token_id < vocab_size:
-            total_prob += probs[space_letter_token_id].item()
-
-        choice_probs.append(total_prob)
-
-    # NOTA always lives at the reserved letter, independent of len(definitions).
-    none_letter = get_option_letter(NOTA_LETTER_INDEX)
-    none_token_id = tokenizer.convert_tokens_to_ids(none_letter)
-    space_none_token_id = tokenizer.convert_tokens_to_ids(f" {none_letter}")
-
-    none_prob = 0.0
-    if none_token_id is not None and none_token_id < vocab_size:
-        none_prob += probs[none_token_id].item()
-    if space_none_token_id is not None and space_none_token_id < vocab_size:
-        none_prob += probs[space_none_token_id].item()
-
-    choice_probs.append(none_prob)
+    With a pruned decoder, logits (and therefore ``probs``) are already laid out
+    in answer-letter order: ``probs[i]`` is the probability of letter_i, which
+    is exactly the i-th choice in the prompt. NOTA always lives at the fixed
+    index :data:`wsd.letters.NOTA_LETTER_INDEX`.
+    """
+    choice_probs = [float(probs[i]) for i in range(len(definitions))]
+    choice_probs.append(float(probs[NOTA_LETTER_INDEX]))  # "none of the above"
     return choice_probs
 
 
@@ -267,13 +243,15 @@ def disambiguate_word(word: str, marked_sentence: str, definitions: list[Definit
     components = load_model()
 
     # Create multiple choice prompt
-    text = create_multiple_choice_prompt(word, components.tokenizer.mask_token, marked_sentence, definitions)
+    text = create_multiple_choice_prompt(
+        word, components.tokenizer.mask_token, marked_sentence, definitions, components.tokenizer,
+    )
 
     # Get prediction
     result = unmask_token(text)
 
     # Get probabilities for all choices
-    choice_probs = get_choice_probabilities(components.tokenizer, result.probabilities, definitions)
+    choice_probs = get_choice_probabilities(result.probabilities, definitions)
 
     # Find best choice and normalize
     best_choice_idx = choice_probs.index(max(choice_probs))
@@ -322,7 +300,8 @@ def disambiguate_word_batch(
                 input_obj.word,
                 components.tokenizer.mask_token,
                 input_obj.marked_sentence,
-                input_obj.definitions
+                input_obj.definitions,
+                components.tokenizer,
             )
             prompts.append(text)
             valid_indices.append(i)
@@ -361,9 +340,8 @@ def disambiguate_word_batch(
 
             # Get probabilities for all choices
             choice_probs = get_choice_probabilities(
-                components.tokenizer,
                 unmask_result.probabilities,
-                input_obj.definitions
+                input_obj.definitions,
             )
             # Find best choice and normalize
             best_choice_idx = choice_probs.index(max(choice_probs))
