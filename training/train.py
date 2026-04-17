@@ -25,7 +25,13 @@ from transformers import (
     TrainingArguments,
 )
 
-from wsd.prompt import Definition, create_multiple_choice_prompt, get_option_letter
+from wsd.prompt import (
+    Definition,
+    WordNotFoundError,
+    create_multiple_choice_prompt,
+    get_option_letter,
+    mark_word_in_sentence,
+)
 
 # Constants
 DEFAULT_MODEL = "answerdotai/ModernBERT-Large-Instruct"
@@ -62,28 +68,6 @@ class TrainingExample:
     correct_synset_id: str
     correct_answer_letter: str
     prompt: str
-
-
-def mark_word_in_sentence(sentence: str, word: str) -> str:
-    """
-    Mark the first occurrence of word in sentence with asterisks.
-
-    Args:
-        sentence: The sentence containing the word
-        word: The word to mark
-
-    Returns:
-        The sentence with the first occurrence of word marked with asterisks
-    """
-    lower_sentence = sentence.lower()
-    lower_word = word.lower()
-
-    start_idx = lower_sentence.find(lower_word)
-    if start_idx == -1:
-        return sentence
-
-    end_idx = start_idx + len(word)
-    return sentence[:start_idx] + "*" + sentence[start_idx:end_idx] + "*" + sentence[end_idx:]
 
 
 def create_examples_for_synset(
@@ -136,7 +120,13 @@ def create_examples_for_synset(
 
     # Create one example for each sentence
     for sentence in synset["examples"]:
-        marked_sentence = mark_word_in_sentence(sentence, word)
+        try:
+            marked_sentence = mark_word_in_sentence(sentence, word)
+        except WordNotFoundError:
+            # Skip sentences where the target word can't be located as a whole
+            # word. The previous implementation silently returned the sentence
+            # unmarked, which produced training examples with no marked span.
+            continue
 
         # Find correct answer after shuffling
         correct_original_idx = synset_to_definition[synset_id]
@@ -192,7 +182,11 @@ def create_none_of_above_example(
     # Pick a random synset and sentence from a different POS
     chosen_synset = random.choice(other_pos_synsets)
     chosen_sentence = random.choice(chosen_synset["examples"])
-    marked_sentence = mark_word_in_sentence(chosen_sentence, word)
+    try:
+        marked_sentence = mark_word_in_sentence(chosen_sentence, word)
+    except WordNotFoundError:
+        # The chosen sentence doesn't contain the target word as a whole word.
+        return None
 
     # Collect definitions only from the most frequent POS tag
     frequent_pos_definitions = []
