@@ -26,6 +26,7 @@ from transformers import (
 )
 
 from wsd.prompt import (
+    NOTA_LETTER_INDEX,
     Definition,
     WordNotFoundError,
     create_multiple_choice_prompt,
@@ -208,8 +209,8 @@ def create_none_of_above_example(
 
     random.shuffle(frequent_pos_definitions)
 
-    # The correct answer is "none of the above"
-    none_letter = get_option_letter(len(frequent_pos_definitions))
+    # The correct answer is "none of the above" — always the reserved NOTA letter.
+    none_letter = get_option_letter(NOTA_LETTER_INDEX)
 
     prompt = create_multiple_choice_prompt(
         word=word,

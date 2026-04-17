@@ -3,6 +3,14 @@ from dataclasses import dataclass
 
 NONE_OF_THE_ABOVE = "none of the above"
 
+# Index of the letter reserved for the "none of the above" (NOTA) slot.
+# Fixed across all prompts so the model sees a single, consistent reject token
+# instead of the NOTA meaning rotating across every letter based on option
+# count. The letter lives at the top of the available range so it does not
+# collide with normal option slots; callers must pass at most this many
+# definitions.
+NOTA_LETTER_INDEX = 108
+
 
 class OptionLetterIndexError(ValueError):
     """Raised when index is too large for option letter"""
@@ -84,17 +92,23 @@ def create_multiple_choice_prompt(word: str,
                                   mask_token: str,
                                   marked_sentence: str,
                                   definitions: list[Definition]) -> str:
-    """Create multiple choice prompt for word sense disambiguation"""
-    if len(definitions) > 100:
-        print(f"Warning: too many definitions ({len(definitions)}) for word '{word}'")
+    """Create multiple choice prompt for word sense disambiguation.
+
+    The letter at :data:`NOTA_LETTER_INDEX` is always reserved for the
+    "none of the above" option, so it is a stable reject signal across all
+    prompts. Definitions occupy letters ``0..NOTA_LETTER_INDEX-1``.
+    """
+    if len(definitions) > NOTA_LETTER_INDEX:
+        raise OptionLetterIndexError(len(definitions))
 
     choices = []
     for i, definition_obj in enumerate(definitions):
         letter = get_option_letter(i)
         choices.append(f"{letter}. {definition_obj.definition}")
 
-    # Add "none of the above" option using next sequential letter
-    none_letter = get_option_letter(len(definitions))
+    # NOTA always uses the reserved letter, regardless of how many
+    # definitions preceded it. Training and inference agree on this index.
+    none_letter = get_option_letter(NOTA_LETTER_INDEX)
     choices.append(f"{none_letter}. {NONE_OF_THE_ABOVE}")
     choices_lines = "\n".join(choices)
     return f"""What is the meaning of *{word}* in this sentence?

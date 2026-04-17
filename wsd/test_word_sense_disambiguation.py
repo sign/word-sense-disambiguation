@@ -3,6 +3,7 @@ import requests_mock
 
 from wsd.env import WORDNET_URL
 from wsd.masked_language_model import load_model
+from wsd.prompt import NOTA_LETTER_INDEX, get_option_letter
 from wsd.word_sense_disambiguation import (
     NO_DEFINITIONS_FOUND,
     NONE_OF_THE_ABOVE,
@@ -172,7 +173,9 @@ def test_create_multiple_choice_prompt():
     assert "bank" in prompt.lower()
     assert "A. a financial institution" in prompt
     assert "B. the edge of a river" in prompt
-    assert f"C. {NONE_OF_THE_ABOVE}" in prompt
+    # NOTA is pinned to the reserved letter, not the next sequential letter.
+    nota_letter = get_option_letter(NOTA_LETTER_INDEX)
+    assert f"{nota_letter}. {NONE_OF_THE_ABOVE}" in prompt
     assert components.tokenizer.mask_token in prompt
 
 
