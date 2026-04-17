@@ -9,6 +9,7 @@ from wsd.env import WORDNET_URL
 from wsd.masked_language_model import load_model, unmask_token, unmask_token_batch
 from wsd.prompt import (
     NONE_OF_THE_ABOVE,
+    NOTA_LETTER_INDEX,
     Definition,
     create_marked_sentence,
     create_multiple_choice_prompt,
@@ -239,8 +240,8 @@ def get_choice_probabilities(tokenizer, probs, definitions: list[Definition]) ->
 
         choice_probs.append(total_prob)
 
-    # Add probability for next letter (none of the above)
-    none_letter = get_option_letter(len(definitions))
+    # NOTA always lives at the reserved letter, independent of len(definitions).
+    none_letter = get_option_letter(NOTA_LETTER_INDEX)
     none_token_id = tokenizer.convert_tokens_to_ids(none_letter)
     space_none_token_id = tokenizer.convert_tokens_to_ids(f" {none_letter}")
 
