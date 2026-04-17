@@ -40,6 +40,9 @@ DEFAULT_BATCH_SIZE = 64
 DEFAULT_LEARNING_RATE = 3e-5
 DEFAULT_WARMUP_RATIO = 0.1
 DEFAULT_RANDOM_SEED = 42
+DEFAULT_WEIGHT_DECAY = 0.0
+DEFAULT_LABEL_SMOOTHING = 0.0
+DEFAULT_LR_SCHEDULER = "linear"
 NONE_SUFFIX = "_none"
 
 
@@ -57,6 +60,9 @@ class TrainingConfig:
     random_seed: int = DEFAULT_RANDOM_SEED
     report_to: str = "wandb"
     max_steps: int = -1  # -1 means no limit (train full epochs)
+    weight_decay: float = DEFAULT_WEIGHT_DECAY
+    label_smoothing: float = DEFAULT_LABEL_SMOOTHING
+    lr_scheduler: str = DEFAULT_LR_SCHEDULER
 
 
 @dataclass
@@ -453,6 +459,24 @@ def main():
         help="Maximum number of training steps (-1 for no limit, useful for debugging)"
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_RANDOM_SEED, help="Random seed")
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=DEFAULT_WEIGHT_DECAY,
+        help="AdamW weight decay (L2 regularization)",
+    )
+    parser.add_argument(
+        "--label-smoothing",
+        type=float,
+        default=DEFAULT_LABEL_SMOOTHING,
+        help="Label smoothing factor passed to TrainingArguments.label_smoothing_factor",
+    )
+    parser.add_argument(
+        "--lr-scheduler",
+        type=str,
+        default=DEFAULT_LR_SCHEDULER,
+        help="HuggingFace LR scheduler type (e.g. linear, cosine, cosine_with_restarts)",
+    )
     args = parser.parse_args()
 
     # Create configuration
@@ -465,6 +489,9 @@ def main():
         num_epochs=args.num_epochs,
         max_steps=args.max_steps,
         random_seed=args.seed,
+        weight_decay=args.weight_decay,
+        label_smoothing=args.label_smoothing,
+        lr_scheduler=args.lr_scheduler,
     )
 
     # Set random seeds for reproducibility
@@ -511,6 +538,9 @@ def main():
         per_device_train_batch_size=config.batch_size,
         learning_rate=config.learning_rate,
         warmup_ratio=config.warmup_ratio,
+        weight_decay=config.weight_decay,
+        label_smoothing_factor=config.label_smoothing,
+        lr_scheduler_type=config.lr_scheduler,
         logging_steps=10,
         save_strategy="epoch" if config.max_steps == -1 else "steps",
         save_total_limit=1,
