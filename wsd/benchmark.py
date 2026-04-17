@@ -1,10 +1,10 @@
 import random
-import re
 from dataclasses import dataclass
 
 import wn
 from tqdm import tqdm
 
+from wsd.prompt import WordNotFoundError, mark_word_in_sentence
 from wsd.word_sense_disambiguation import (
     DisambiguationInput,
     WordQuery,
@@ -47,10 +47,11 @@ def collect_wordnet_examples():
         for word in synset.words():
             for form in word.forms():
                 for example in examples:
-                    regex_form = r'\b' + re.escape(form) + r'\b'
-                    if re.search(regex_form, example, re.IGNORECASE):
-                        marked_text = re.sub(regex_form, r'*\g<0>*', example, flags=re.IGNORECASE)
-                        yield WordNetExample(synset_id, form, word.lemma(), word.pos, marked_text)
+                    try:
+                        marked_text = mark_word_in_sentence(example, form)
+                    except WordNotFoundError:
+                        continue
+                    yield WordNetExample(synset_id, form, word.lemma(), word.pos, marked_text)
 
 if __name__ == "__main__":
     examples = collect_wordnet_examples()

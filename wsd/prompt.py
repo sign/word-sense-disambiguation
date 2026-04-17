@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 
 NONE_OF_THE_ABOVE = "none of the above"
@@ -7,6 +8,39 @@ class OptionLetterIndexError(ValueError):
     """Raised when index is too large for option letter"""
     def __init__(self, index: int):
         super().__init__(f"Index too large for option letter {index}")
+
+
+class WordNotFoundError(ValueError):
+    """Raised when *word* cannot be found in *sentence* with word boundaries."""
+    def __init__(self, word: str, sentence: str):
+        super().__init__(f"Word {word!r} not found with word boundaries in sentence: {sentence!r}")
+        self.word = word
+        self.sentence = sentence
+
+
+def mark_word_in_sentence(sentence: str, word: str) -> str:
+    """Mark the first word-boundary occurrence of *word* in *sentence* with asterisks.
+
+    Case-insensitive. Uses regex word boundaries so the match does not fire
+    inside longer words ("bank" does not match inside "bankrupt"). Exactly
+    one span is marked (the first match), so the output always contains
+    exactly one ``*...*`` pair.
+
+    Raises ``WordNotFoundError`` if no word-boundary match is found, or if
+    *sentence* already contains an asterisk (which would be ambiguous with
+    our marker character).
+    """
+    if "*" in sentence:
+        raise WordNotFoundError(word, sentence)
+    pattern = r"\b" + re.escape(word) + r"\b"
+    match = re.search(pattern, sentence, flags=re.IGNORECASE)
+    if match is None:
+        raise WordNotFoundError(word, sentence)
+    start, end = match.span()
+    marked = sentence[:start] + "*" + sentence[start:end] + "*" + sentence[end:]
+    # Invariant: exactly one marked span (two asterisks) in the output.
+    assert marked.count("*") == 2, marked
+    return marked
 
 
 @dataclass
