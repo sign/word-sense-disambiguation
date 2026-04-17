@@ -3,90 +3,33 @@
 Provides a single deterministic split between the eval subset (used during
 training) and the benchmark subset (used for final evaluation). Training and
 benchmark MUST use the same seed so the two disjoint sets never overlap.
+
+The underlying iteration lives in :mod:`wsd.benchmark` so the loader and the
+evaluation script can't drift apart.
 """
 import random
-from dataclasses import dataclass
 
-import wn
-
-from wsd.prompt import WordNotFoundError, mark_word_in_sentence
+from wsd.benchmark import WordNetExample, collect_wordnet_examples
 
 
-@dataclass
-class WnExample:
-    """A single WordNet-derived disambiguation example."""
-    synset_id: str
-    word_form: str  # surface form shown in the sentence
-    lemma: str
-    pos: str
-    marked_text: str  # sentence with *word* markers
-    sentence: str  # original, unmarked
-
-
-def _ensure_lexicon() -> wn.Wordnet:
-    try:
-        return wn.Wordnet(lexicon="omw-en:1.4")
-    except wn.Error:
-        wn.download("omw-en:1.4")
-        return wn.Wordnet(lexicon="omw-en:1.4")
-
-
-def collect_all(seed: int = 42) -> list[WnExample]:
-    """Enumerate every usable (synset, word form, example) combination.
-
-    Filters out monosemous target words (nothing to disambiguate) and sentences
-    where the form can't be marked with clean word boundaries. Returns a
-    deterministically shuffled list.
-    """
-    en = _ensure_lexicon()
-    out: list[WnExample] = []
-    for synset in en.synsets():
-        examples = synset.examples()
-        if not examples:
-            continue
-        for word in synset.words():
-            # Skip monosemous target words — nothing to disambiguate.
-            if len(word.synsets()) <= 1:
-                continue
-            for form in word.forms():
-                for example in examples:
-                    try:
-                        marked = mark_word_in_sentence(example, form)
-                    except WordNotFoundError:
-                        continue
-                    out.append(
-                        WnExample(
-                            synset_id=synset.id,
-                            word_form=form,
-                            lemma=word.lemma(),
-                            pos=word.pos,
-                            marked_text=marked,
-                            sentence=example,
-                        )
-                    )
-    rng = random.Random(seed)
-    rng.shuffle(out)
-    return out
-
-
-def split(n_eval: int = 1000, seed: int = 42) -> tuple[list[WnExample], list[WnExample]]:
+def split(
+    n_eval: int = 1000, seed: int = 42
+) -> tuple[list[WordNetExample], list[WordNetExample]]:
     """Return (eval_examples, benchmark_examples) disjoint at the synset level.
 
     Examples sharing a ``synset_id`` are never split across the two sets, so the
     benchmark measures generalization to synsets unseen during training-time eval.
     """
-    all_examples = collect_all(seed=seed)
-
-    by_synset: dict[str, list[WnExample]] = {}
-    for ex in all_examples:
+    by_synset: dict[str, list[WordNetExample]] = {}
+    for ex in collect_wordnet_examples():
         by_synset.setdefault(ex.synset_id, []).append(ex)
 
     synset_ids = list(by_synset.keys())
     rng = random.Random(seed)
     rng.shuffle(synset_ids)
 
-    eval_examples: list[WnExample] = []
-    benchmark_examples: list[WnExample] = []
+    eval_examples: list[WordNetExample] = []
+    benchmark_examples: list[WordNetExample] = []
     for sid in synset_ids:
         group = by_synset[sid]
         if len(eval_examples) < n_eval:

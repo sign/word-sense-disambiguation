@@ -19,10 +19,16 @@ class WordNetExample:
     word_form: str
     lemma: str
     pos: str
-    marked_text: str
+    marked_text: str  # sentence with *word* markers
+    sentence: str  # original, unmarked example
+
 
 def collect_wordnet_examples():
-    """List all English words and example sentences from WordNet"""
+    """Yield every usable (synset, word form, example) tuple from OMW English.
+
+    Skips monosemous target words (nothing to disambiguate) and sentences where
+    the form can't be marked with clean word boundaries.
+    """
 
     # Ensure omw-en:1.4 is downloaded
     try:
@@ -34,24 +40,23 @@ def collect_wordnet_examples():
 
     # Iterate through all synsets
     for synset in en.synsets():
-        synset_id = synset.id
-        word_synsets = sum(len(word.synsets()) for word in synset.words())
-        if word_synsets == 1:
-            # Trivial case, only one possible meaning
-            continue
-
         examples = synset.examples()
         if len(examples) == 0:
             continue
 
         for word in synset.words():
+            # Skip monosemous target words — nothing to disambiguate.
+            if len(word.synsets()) <= 1:
+                continue
             for form in word.forms():
                 for example in examples:
                     try:
                         marked_text = mark_word_in_sentence(example, form)
                     except WordNotFoundError:
                         continue
-                    yield WordNetExample(synset_id, form, word.lemma(), word.pos, marked_text)
+                    yield WordNetExample(
+                        synset.id, form, word.lemma(), word.pos, marked_text, example
+                    )
 
 if __name__ == "__main__":
     examples = collect_wordnet_examples()
