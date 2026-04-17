@@ -218,21 +218,24 @@ def get_definitions_single(word: str, pos: str, language: str = "en") -> list[De
     return results[0] if results else []
 
 
-def get_choice_probabilities(probs, definitions: list[Definition]) -> list[float]:
+def get_choice_probabilities(
+    probs, definitions: list[Definition], start_offset: int = 0,
+) -> list[float]:
     """Get probabilities for all choice letters including 'none of the above'.
 
     With a pruned decoder, logits (and therefore ``probs``) are already laid out
-    in answer-letter order: ``probs[i]`` is the probability of letter_i, which
-    is exactly the i-th choice in the prompt. NOTA always lives at the fixed
-    index :data:`wsd.letters.NOTA_LETTER_INDEX`.
+    in answer-letter order. ``definitions[i]`` occupies letter
+    ``start_offset + i``; NOTA always lives at the fixed index
+    :data:`wsd.letters.NOTA_LETTER_INDEX`. The returned list has one entry per
+    definition followed by the NOTA probability.
     """
-    choice_probs = [float(probs[i]) for i in range(len(definitions))]
+    choice_probs = [float(probs[start_offset + i]) for i in range(len(definitions))]
     choice_probs.append(float(probs[NOTA_LETTER_INDEX]))  # "none of the above"
     return choice_probs
 
 
 def _result_from_probs(
-    probs, definitions: list[Definition],
+    probs, definitions: list[Definition], start_offset: int = 0,
 ) -> DisambiguationResult:
     """Pick the best choice from ``probs`` and package it as a result.
 
@@ -240,7 +243,7 @@ def _result_from_probs(
     the appended last entry), not at :data:`NOTA_LETTER_INDEX`; confidence is
     renormalized over the valid choices only.
     """
-    choice_probs = get_choice_probabilities(probs, definitions)
+    choice_probs = get_choice_probabilities(probs, definitions, start_offset)
     best_choice_idx = choice_probs.index(max(choice_probs))
     total_prob = sum(choice_probs)
     normalized_score = choice_probs[best_choice_idx] / total_prob if total_prob > 0 else 0.0
@@ -260,17 +263,22 @@ def _result_from_probs(
 
 
 def disambiguate_word(
-    word: str, marked_sentence: str, definitions: list[Definition],
+    word: str,
+    marked_sentence: str,
+    definitions: list[Definition],
+    start_offset: int = 0,
 ) -> DisambiguationResult:
     """Use ModernBERT to disambiguate word sense given context and definitions"""
     results = disambiguate_word_batch(
-        [DisambiguationInput(word=word, marked_sentence=marked_sentence, definitions=definitions)]
+        [DisambiguationInput(word=word, marked_sentence=marked_sentence, definitions=definitions)],
+        start_offset=start_offset,
     )
     return results[0]
 
 
 def disambiguate_word_batch(
         batch_data: list[DisambiguationInput],
+        start_offset: int = 0,
 ) -> list[DisambiguationResult]:
     """
     Batch version of disambiguate_word that processes multiple words in parallel.
@@ -297,6 +305,7 @@ def disambiguate_word_batch(
                 input_obj.marked_sentence,
                 input_obj.definitions,
                 components.tokenizer,
+                start_offset=start_offset,
             )
             prompts.append(text)
             valid_indices.append(i)
@@ -327,7 +336,9 @@ def disambiguate_word_batch(
             continue
         unmask_result = batch_results[result_idx]
         result_idx += 1
-        results.append(_result_from_probs(unmask_result.probabilities, input_obj.definitions))
+        results.append(_result_from_probs(
+            unmask_result.probabilities, input_obj.definitions, start_offset=start_offset,
+        ))
     return results
 
 
