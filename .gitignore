@@ -5,3 +5,7 @@ build
 .env
 __pycache__/
 .DS_Store
+
+# Runtime cache built up by training/data/generate.py as it discovers
+# monosemous WordNet forms. Regenerated on demand, not source.
+training/data/skip_forms.txt
