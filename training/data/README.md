@@ -1,6 +1,6 @@
 # Data Generation
 
-Start an ollama server, with `deepseek-r1`
+Start an ollama server, with `gpt-oss:120b`
 
 ```shell
 ollama pull gpt-oss:120b
