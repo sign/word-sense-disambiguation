@@ -1,9 +1,14 @@
+import os
 import time
 from dataclasses import dataclass
 from functools import cache
 
 import torch
 from transformers import AutoModelForMaskedLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
+
+# Allow overriding the model source (e.g. a local checkpoint directory) for
+# benchmarking or evaluation without editing call sites.
+_DEFAULT_MODEL = os.environ.get("WSD_MODEL", "sign/ModernBERT-Large-Instruct-WSD")
 
 
 class PromptMaskError(ValueError):
@@ -27,7 +32,7 @@ class UnmaskResult:
 
 
 @cache
-def load_model(model_name: str = "sign/ModernBERT-Large-Instruct-WSD") -> ModelComponents:
+def load_model(model_name: str = _DEFAULT_MODEL) -> ModelComponents:
     if torch.cuda.is_available():
         device = "cuda"
     elif torch.backends.mps.is_available():
