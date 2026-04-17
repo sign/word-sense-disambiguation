@@ -254,11 +254,13 @@ def build_eval_examples_from_wn(
     """Convert :class:`WordNetExample` objects into :class:`TrainingExample` objects.
 
     Mirrors the benchmark's definition-lookup path: for each example, fetch all
-    synset definitions for ``(lemma, pos)`` via the wn library, sort by
-    ``synset_id`` and position the correct answer at the letter matching the
-    correct synset's index. Skips examples where the correct synset isn't among
-    the fetched definitions (can happen when the wn lexicon disagrees with the
-    example's own synset metadata), and any where we'd exceed the letter budget.
+    synset definitions for ``(lemma, pos)`` via the wn library and position the
+    correct answer at the letter matching its index. Definitions are kept in
+    wn iteration order (roughly frequency order) so the more common sense
+    lands on earlier letter slots, matching the inference-time API order.
+    Skips examples where the correct synset isn't among the fetched definitions
+    (can happen when the wn lexicon disagrees with the example's own synset
+    metadata), and any where we'd exceed the letter budget.
     """
     import wn as _wn
 
@@ -287,11 +289,12 @@ def build_eval_examples_from_wn(
             continue
         if len(defs) > max_definitions:
             continue
-        sorted_ids = sorted(defs)
         definitions = [
-            Definition(synset_id=sid, definition=defs[sid]) for sid in sorted_ids
+            Definition(synset_id=sid, definition=text) for sid, text in defs.items()
         ]
-        correct_idx = sorted_ids.index(ex.synset_id)
+        correct_idx = next(
+            i for i, d in enumerate(definitions) if d.synset_id == ex.synset_id
+        )
         correct_letter = letters[correct_idx]
         prompt = create_multiple_choice_prompt(
             word=ex.word_form,

@@ -56,18 +56,6 @@ class Definition:
     definition: str
 
 
-def get_option_letter(tokenizer: PreTrainedTokenizerBase, index: int) -> str:
-    """Return the i-th answer-letter for the given tokenizer.
-
-    The letter set is deterministic: letter_i is always the same for a given
-    tokenizer, so training and inference agree on the mapping.
-    """
-    letters = build_letters(tokenizer).letters
-    if index >= len(letters):
-        raise OptionLetterIndexError(index)
-    return letters[index]
-
-
 def create_marked_sentence(doc, target_position: int) -> str:
     """Create sentence with target word marked with asterisks"""
     text = ""
