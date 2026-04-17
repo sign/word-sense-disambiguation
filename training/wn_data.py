@@ -34,20 +34,20 @@ def _ensure_lexicon() -> wn.Wordnet:
 def collect_all(seed: int = 42) -> list[WnExample]:
     """Enumerate every usable (synset, word form, example) combination.
 
-    Filters out monosemous synsets (nothing to disambiguate) and sentences
+    Filters out monosemous target words (nothing to disambiguate) and sentences
     where the form can't be marked with clean word boundaries. Returns a
     deterministically shuffled list.
     """
     en = _ensure_lexicon()
     out: list[WnExample] = []
     for synset in en.synsets():
-        word_synsets = sum(len(word.synsets()) for word in synset.words())
-        if word_synsets == 1:
-            continue
         examples = synset.examples()
         if not examples:
             continue
         for word in synset.words():
+            # Skip monosemous target words — nothing to disambiguate.
+            if len(word.synsets()) <= 1:
+                continue
             for form in word.forms():
                 for example in examples:
                     try:
@@ -70,6 +70,27 @@ def collect_all(seed: int = 42) -> list[WnExample]:
 
 
 def split(n_eval: int = 1000, seed: int = 42) -> tuple[list[WnExample], list[WnExample]]:
-    """Return (eval_examples, benchmark_examples) with no overlap."""
+    """Return (eval_examples, benchmark_examples) disjoint at the synset level.
+
+    Examples sharing a ``synset_id`` are never split across the two sets, so the
+    benchmark measures generalization to synsets unseen during training-time eval.
+    """
     all_examples = collect_all(seed=seed)
-    return all_examples[:n_eval], all_examples[n_eval:]
+
+    by_synset: dict[str, list[WnExample]] = {}
+    for ex in all_examples:
+        by_synset.setdefault(ex.synset_id, []).append(ex)
+
+    synset_ids = list(by_synset.keys())
+    rng = random.Random(seed)
+    rng.shuffle(synset_ids)
+
+    eval_examples: list[WnExample] = []
+    benchmark_examples: list[WnExample] = []
+    for sid in synset_ids:
+        group = by_synset[sid]
+        if len(eval_examples) < n_eval:
+            eval_examples.extend(group)
+        else:
+            benchmark_examples.extend(group)
+    return eval_examples, benchmark_examples

@@ -7,8 +7,10 @@ ENV WANDB_DISABLED=true \
     WANDB_MODE=disabled
 
 # Training-time eval loads WordNet via the wn library. Not needed at serving
-# time, so keep it in the training layer.
-RUN pip install --no-cache-dir wn
+# time, so keep it in the training layer. Bake the OMW lexicon into the image
+# so training doesn't need network access on first run.
+RUN pip install --no-cache-dir "wn==1.1.0" \
+    && python -c "import wn; wn.download('omw-en:1.4')"
 
 # Bring in the training script and data loader (not present in the base image).
 COPY training/ ./training/
