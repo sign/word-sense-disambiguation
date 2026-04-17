@@ -8,6 +8,7 @@ from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
 from wsd.letters import LetterSet, build_letters
 from wsd.model import WSDModernBertForMaskedLM
+from wsd.model_surgery import prune_decoder
 
 # Allow overriding the model source (e.g. a local checkpoint directory) for
 # benchmarking or evaluation without editing call sites.
@@ -52,6 +53,12 @@ def load_model(model_name: str = _DEFAULT_MODEL) -> ModelComponents:
         device_map=device,
         dtype=torch.float16 if device == "cuda" else None,
     )
+    # Stock checkpoints ship with a full-vocab decoder; prune it to the 128
+    # answer letters so decoder outputs are indexed by compact ids. Checkpoints
+    # already trained with the pruned decoder have out_features == 128 and this
+    # is a no-op.
+    if model.decoder.out_features != len(letter_set.letters):
+        letter_set = prune_decoder(model, tokenizer)
     model.eval()
     return ModelComponents(model=model, tokenizer=tokenizer, device=device, letter_set=letter_set)
 
