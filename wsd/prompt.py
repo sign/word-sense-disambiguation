@@ -1,21 +1,11 @@
 import re
 from dataclasses import dataclass
 
+from transformers import PreTrainedTokenizerBase
+
+from wsd.letters import NOTA_LETTER_INDEX, build_letters
+
 NONE_OF_THE_ABOVE = "none of the above"
-
-# Index of the letter reserved for the "none of the above" (NOTA) slot.
-# Fixed across all prompts so the model sees a single, consistent reject token
-# instead of the NOTA meaning rotating across every letter based on option
-# count. The letter lives at the top of the available range so it does not
-# collide with normal option slots; callers must pass at most this many
-# definitions.
-NOTA_LETTER_INDEX = 108
-
-
-class OptionLetterIndexError(ValueError):
-    """Raised when index is too large for option letter"""
-    def __init__(self, index: int):
-        super().__init__(f"Index too large for option letter {index}")
 
 
 class WordNotFoundError(ValueError):
@@ -30,9 +20,11 @@ def mark_word_in_sentence(sentence: str, word: str) -> str:
     """Mark the first word-boundary occurrence of *word* in *sentence* with asterisks.
 
     Case-insensitive. Uses regex word boundaries so the match does not fire
-    inside longer words ("bank" does not match inside "bankrupt"). Exactly
-    one span is marked (the first match), so the output always contains
-    exactly one ``*...*`` pair.
+    inside longer words ("100" does not match "100th"). Exactly one span is
+    marked (the first match), so the output always contains exactly one
+    ``*...*`` pair. This is the single source of truth for marking shared by
+    training data generation and benchmark/inference paths; identical output
+    here means identical prompts.
 
     Raises ``WordNotFoundError`` if no word-boundary match is found, or if
     *sentence* already contains an asterisk (which would be ambiguous with
@@ -51,6 +43,12 @@ def mark_word_in_sentence(sentence: str, word: str) -> str:
     return marked
 
 
+class OptionLetterIndexError(ValueError):
+    """Raised when index is too large for option letter"""
+    def __init__(self, index: int):
+        super().__init__(f"Index too large for option letter {index}")
+
+
 @dataclass
 class Definition:
     """A single word definition from WordNet"""
@@ -58,22 +56,16 @@ class Definition:
     definition: str
 
 
-def get_option_letter(index: int) -> str:
+def get_option_letter(tokenizer: PreTrainedTokenizerBase, index: int) -> str:
+    """Return the i-th answer-letter for the given tokenizer.
+
+    The letter set is deterministic: letter_i is always the same for a given
+    tokenizer, so training and inference agree on the mapping.
     """
-    Get option letter for given index.
-    Uses A-Z (26), then a-z (26) for total of 52 possible options.
-    Each option is a single character token for masked language model prediction.
-    """
-    if index < 26:
-        return chr(ord('A') + index)
-    elif index < 52:
-        return chr(ord('a') + (index - 26))
-    elif index < 76:
-        return chr(ord('α') + (index - 52))
-    elif index < 109:
-        return chr(ord('А') + (index - 76))
-    else:
+    letters = build_letters(tokenizer).letters
+    if index >= len(letters):
         raise OptionLetterIndexError(index)
+    return letters[index]
 
 
 def create_marked_sentence(doc, target_position: int) -> str:
@@ -91,24 +83,27 @@ def create_marked_sentence(doc, target_position: int) -> str:
 def create_multiple_choice_prompt(word: str,
                                   mask_token: str,
                                   marked_sentence: str,
-                                  definitions: list[Definition]) -> str:
+                                  definitions: list[Definition],
+                                  tokenizer: PreTrainedTokenizerBase) -> str:
     """Create multiple choice prompt for word sense disambiguation.
 
-    The letter at :data:`NOTA_LETTER_INDEX` is always reserved for the
-    "none of the above" option, so it is a stable reject signal across all
-    prompts. Definitions occupy letters ``0..NOTA_LETTER_INDEX-1``.
+    The last letter (index :data:`wsd.letters.NOTA_LETTER_INDEX`) is always
+    reserved for the "none of the above" option, so it's a stable reject
+    signal across all prompts. At most ``NOTA_LETTER_INDEX`` definitions may
+    be passed (they occupy letters 0..NOTA_LETTER_INDEX-1).
     """
+    letters = build_letters(tokenizer).letters
     if len(definitions) > NOTA_LETTER_INDEX:
         raise OptionLetterIndexError(len(definitions))
 
     choices = []
     for i, definition_obj in enumerate(definitions):
-        letter = get_option_letter(i)
+        letter = letters[i]
         choices.append(f"{letter}. {definition_obj.definition}")
 
-    # NOTA always uses the reserved letter, regardless of how many
+    # NOTA always uses the reserved last letter, regardless of how many
     # definitions preceded it. Training and inference agree on this index.
-    none_letter = get_option_letter(NOTA_LETTER_INDEX)
+    none_letter = letters[NOTA_LETTER_INDEX]
     choices.append(f"{none_letter}. {NONE_OF_THE_ABOVE}")
     choices_lines = "\n".join(choices)
     return f"""What is the meaning of *{word}* in this sentence?

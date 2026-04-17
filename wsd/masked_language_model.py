@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from functools import cache
 
 import torch
-from transformers import AutoModelForMaskedLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
+from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
+
+from wsd.letters import LetterSet, build_letters
+from wsd.model import WSDModernBertForMaskedLM
 
 # Allow overriding the model source (e.g. a local checkpoint directory) for
 # benchmarking or evaluation without editing call sites.
@@ -22,6 +25,7 @@ class ModelComponents:
     model: PreTrainedModel
     tokenizer: PreTrainedTokenizerBase
     device: str
+    letter_set: LetterSet
 
 
 @dataclass
@@ -41,14 +45,15 @@ def load_model(model_name: str = _DEFAULT_MODEL) -> ModelComponents:
         device = "cpu"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
+    letter_set = build_letters(tokenizer)
 
-    model = AutoModelForMaskedLM.from_pretrained(
+    model = WSDModernBertForMaskedLM.from_pretrained(
         model_name,
         device_map=device,
         dtype=torch.float16 if device == "cuda" else None,
     )
     model.eval()
-    return ModelComponents(model=model, tokenizer=tokenizer, device=device)
+    return ModelComponents(model=model, tokenizer=tokenizer, device=device, letter_set=letter_set)
 
 
 def unmask_token(text: str) -> UnmaskResult:
@@ -65,9 +70,9 @@ def unmask_token(text: str) -> UnmaskResult:
 
     logits = outputs.logits[0, mask_idx[0, 1]]
     probs = torch.softmax(logits, dim=-1)
-    token_id = torch.argmax(probs).item()
+    compact_id = int(torch.argmax(probs).item())
 
-    decoded_token = components.tokenizer.decode(token_id).strip()
+    decoded_token = components.letter_set.letters[compact_id]
     return UnmaskResult(token=decoded_token, probabilities=probs)
 
 
@@ -109,8 +114,8 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     for batch_idx, seq_idx in mask_positions:
         logits = outputs.logits[batch_idx, seq_idx]
         probs = torch.softmax(logits, dim=-1)
-        token_id = torch.argmax(probs).item()
-        decoded_token = components.tokenizer.decode(token_id).strip()
+        compact_id = int(torch.argmax(probs).item())
+        decoded_token = components.letter_set.letters[compact_id]
         results.append(UnmaskResult(token=decoded_token, probabilities=probs))
 
     return results
