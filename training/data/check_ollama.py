@@ -23,28 +23,25 @@ try:
 
     if model_exists:
         print(f"\n✓ Model '{model_name}' is available")
+
+        # Test the chat endpoint (only meaningful if the model is actually present)
+        print("\nTesting chat endpoint...")
+        test_payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": "test"}],
+            "stream": False
+        }
+
+        chat_response = requests.post(f"{OLLAMA_BASE}/api/chat", json=test_payload)
+        if chat_response.status_code == 200:
+            print("✓ Chat endpoint is working")
+        else:
+            print(f"✗ Chat endpoint returned status {chat_response.status_code}")
+            print(f"  Response: {chat_response.text}")
     else:
         print(f"\n✗ Model '{model_name}' NOT found")
         print("  You need to pull this model first:")
         print(f"  ollama pull {model_name}")
-
-    # Test the chat endpoint
-    print("\nTesting chat endpoint...")
-    test_payload = {
-        "model": model_name,
-        "messages": [{"role": "user", "content": "test"}],
-        "stream": False
-    }
-
-    chat_response = requests.post(f"{OLLAMA_BASE}/api/chat", json=test_payload)
-    if chat_response.status_code == 404:
-        print("✗ Chat endpoint returned 404")
-        print("  This might mean the model doesn't exist or Ollama version issue")
-    elif chat_response.status_code == 200:
-        print("✓ Chat endpoint is working")
-    else:
-        print(f"✗ Chat endpoint returned status {chat_response.status_code}")
-        print(f"  Response: {chat_response.text}")
 
 except requests.exceptions.ConnectionError:
     print("✗ Cannot connect to Ollama")
