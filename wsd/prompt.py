@@ -72,21 +72,26 @@ def create_multiple_choice_prompt(word: str,
                                   mask_token: str,
                                   marked_sentence: str,
                                   definitions: list[Definition],
-                                  tokenizer: PreTrainedTokenizerBase) -> str:
+                                  tokenizer: PreTrainedTokenizerBase,
+                                  start_offset: int = 0) -> str:
     """Create multiple choice prompt for word sense disambiguation.
 
+    ``definitions[i]`` is rendered with letter ``start_offset + i``; the
+    default ``start_offset=0`` keeps the historical "A, B, C, ..." layout.
+    Non-zero offsets are used by the bias probe to test whether the model
+    depends on the specific A-first mapping it saw during training.
+
     The last letter (index :data:`wsd.letters.NOTA_LETTER_INDEX`) is always
-    reserved for the "none of the above" option, so it's a stable reject
-    signal across all prompts. At most ``NOTA_LETTER_INDEX`` definitions may
-    be passed (they occupy letters 0..NOTA_LETTER_INDEX-1).
+    reserved for the "none of the above" option. The offset window must not
+    collide with NOTA: ``start_offset + len(definitions) <= NOTA_LETTER_INDEX``.
     """
     letters = build_letters(tokenizer).letters
-    if len(definitions) > NOTA_LETTER_INDEX:
-        raise OptionLetterIndexError(len(definitions))
+    if start_offset < 0 or start_offset + len(definitions) > NOTA_LETTER_INDEX:
+        raise OptionLetterIndexError(start_offset + len(definitions))
 
     choices = []
     for i, definition_obj in enumerate(definitions):
-        letter = letters[i]
+        letter = letters[start_offset + i]
         choices.append(f"{letter}. {definition_obj.definition}")
 
     # NOTA always uses the reserved last letter, regardless of how many
