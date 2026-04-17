@@ -1,0 +1,16 @@
+# Extends the serve image with the training pipeline.
+#   Build the base first:   docker build -t wsd .
+#   Build training on top:  docker build -f Dockerfile.train -t wsd-train .
+FROM wsd
+
+ENV WANDB_DISABLED=true \
+    WANDB_MODE=disabled
+
+# Training-time eval loads WordNet via the wn library. Not needed at serving
+# time, so keep it in the training layer.
+RUN pip install --no-cache-dir wn
+
+# Bring in the training script and data loader (not present in the base image).
+COPY training/ ./training/
+
+CMD ["python", "-m", "training.train"]
