@@ -7,7 +7,7 @@ from colorama import Fore, Style, init
 
 from wsd.env import WORDNET_URL
 from wsd.letters import NOTA_LETTER_INDEX
-from wsd.masked_language_model import load_model, unmask_token, unmask_token_batch
+from wsd.masked_language_model import load_model, unmask_token_batch
 from wsd.prompt import (
     NONE_OF_THE_ABOVE,
     Definition,
@@ -130,15 +130,15 @@ def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list
 
         data = response.json()
 
-        # Parse response and maintain order
+        # Parse response and maintain order. Definitions are kept in the order
+        # returned by the API — typically WordNet's frequency order — so the
+        # more common senses land on earlier letter slots.
         results = []
         for item in data.get("data", []):
-            definitions = []
-            # Sort definitions by synset_id for consistent ordering
-            definitions_dict = item.get("definitions", {})
-            for synset_id in sorted(definitions_dict.keys()):
-                definition_text = definitions_dict[synset_id]
-                definitions.append(Definition(synset_id=synset_id, definition=definition_text))
+            definitions = [
+                Definition(synset_id=synset_id, definition=definition_text)
+                for synset_id, definition_text in item.get("definitions", {}).items()
+            ]
             results.append(definitions)
 
         # Validate response has correct number of items
@@ -231,51 +231,46 @@ def get_choice_probabilities(probs, definitions: list[Definition]) -> list[float
     return choice_probs
 
 
-def disambiguate_word(word: str, marked_sentence: str, definitions: list[Definition]) -> DisambiguationResult:
-    """Use ModernBERT to disambiguate word sense given context and definitions"""
-    if not definitions:
-        return DisambiguationResult(
-            synset_id=NO_DEFINITIONS_FOUND,
-            definition="",
-            confidence=0.0
-        )
+def _result_from_probs(
+    probs, definitions: list[Definition],
+) -> DisambiguationResult:
+    """Pick the best choice from ``probs`` and package it as a result.
 
-    components = load_model()
-
-    # Create multiple choice prompt
-    text = create_multiple_choice_prompt(
-        word, components.tokenizer.mask_token, marked_sentence, definitions, components.tokenizer,
-    )
-
-    # Get prediction
-    result = unmask_token(text)
-
-    # Get probabilities for all choices
-    choice_probs = get_choice_probabilities(result.probabilities, definitions)
-
-    # Find best choice and normalize
+    NOTA is indexed at ``len(definitions)`` in the ``choice_probs`` list (it's
+    the appended last entry), not at :data:`NOTA_LETTER_INDEX`; confidence is
+    renormalized over the valid choices only.
+    """
+    choice_probs = get_choice_probabilities(probs, definitions)
     best_choice_idx = choice_probs.index(max(choice_probs))
     total_prob = sum(choice_probs)
     normalized_score = choice_probs[best_choice_idx] / total_prob if total_prob > 0 else 0.0
 
-    # Handle "none of the above" case
-    if best_choice_idx == len(definitions):  # Next letter option selected
+    if best_choice_idx == len(definitions):  # NOTA slot
         return DisambiguationResult(
             synset_id="",
             definition=NONE_OF_THE_ABOVE,
-            confidence=normalized_score
+            confidence=normalized_score,
         )
-    else:
-        best_definition = definitions[best_choice_idx]
-        return DisambiguationResult(
-            synset_id=best_definition.synset_id,
-            definition=best_definition.definition,
-            confidence=normalized_score
-        )
+    best_definition = definitions[best_choice_idx]
+    return DisambiguationResult(
+        synset_id=best_definition.synset_id,
+        definition=best_definition.definition,
+        confidence=normalized_score,
+    )
+
+
+def disambiguate_word(
+    word: str, marked_sentence: str, definitions: list[Definition],
+) -> DisambiguationResult:
+    """Use ModernBERT to disambiguate word sense given context and definitions"""
+    results = disambiguate_word_batch(
+        [DisambiguationInput(word=word, marked_sentence=marked_sentence, definitions=definitions)]
+    )
+    return results[0]
 
 
 def disambiguate_word_batch(
-        batch_data: list[DisambiguationInput]
+        batch_data: list[DisambiguationInput],
 ) -> list[DisambiguationResult]:
     """
     Batch version of disambiguate_word that processes multiple words in parallel.
@@ -321,52 +316,18 @@ def disambiguate_word_batch(
     batch_results = unmask_token_batch(prompts)
 
     # Process results
+    valid_set = set(valid_indices)
     results = []
     result_idx = 0
     for i, input_obj in enumerate(batch_data):
-        if i not in valid_indices:
-            # No definitions for this word
-            results.append(
-                DisambiguationResult(
-                    synset_id=NO_DEFINITIONS_FOUND,
-                    definition="",
-                    confidence=0.0
-                )
-            )
-        else:
-            # Process the prediction for this word
-            unmask_result = batch_results[result_idx]
-            result_idx += 1
-
-            # Get probabilities for all choices
-            choice_probs = get_choice_probabilities(
-                unmask_result.probabilities,
-                input_obj.definitions,
-            )
-            # Find best choice and normalize
-            best_choice_idx = choice_probs.index(max(choice_probs))
-            total_prob = sum(choice_probs)
-            normalized_score = choice_probs[best_choice_idx] / total_prob if total_prob > 0 else 0.0
-
-            # Handle "none of the above" case
-            if best_choice_idx == len(input_obj.definitions):  # Next letter option selected
-                results.append(
-                    DisambiguationResult(
-                        synset_id="",
-                        definition=NONE_OF_THE_ABOVE,
-                        confidence=normalized_score
-                    )
-                )
-            else:
-                best_definition = input_obj.definitions[best_choice_idx]
-                results.append(
-                    DisambiguationResult(
-                        synset_id=best_definition.synset_id,
-                        definition=best_definition.definition,
-                        confidence=normalized_score
-                    )
-                )
-
+        if i not in valid_set:
+            results.append(DisambiguationResult(
+                synset_id=NO_DEFINITIONS_FOUND, definition="", confidence=0.0,
+            ))
+            continue
+        unmask_result = batch_results[result_idx]
+        result_idx += 1
+        results.append(_result_from_probs(unmask_result.probabilities, input_obj.definitions))
     return results
 
 
