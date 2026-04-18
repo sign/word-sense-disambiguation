@@ -702,7 +702,13 @@ def main():
         total = mask.sum()
         return {"accuracy": float(correct) / max(int(total), 1)}
 
+    # When eval is enabled we save at the same cadence so
+    # load_best_model_at_end can compare eval metrics to saved checkpoints
+    # and restore the best-accuracy one at the end of training.
     eval_enabled = eval_dataset is not None
+    save_strategy = "steps" if eval_enabled else (
+        "epoch" if config.max_steps == -1 else "steps"
+    )
     training_args = TrainingArguments(
         output_dir=str(config.output_dir),
         num_train_epochs=config.num_epochs,
@@ -717,8 +723,12 @@ def main():
         logging_steps=10,
         eval_strategy="steps" if eval_enabled else "no",
         eval_steps=config.eval_steps if eval_enabled else None,
-        save_strategy="epoch" if config.max_steps == -1 else "steps",
-        save_total_limit=1,
+        save_strategy=save_strategy,
+        save_steps=config.eval_steps if save_strategy == "steps" else None,
+        save_total_limit=2,
+        load_best_model_at_end=eval_enabled,
+        metric_for_best_model="accuracy" if eval_enabled else None,
+        greater_is_better=True if eval_enabled else None,
         bf16=torch.cuda.is_available(),
         dataloader_num_workers=0,
         report_to=config.report_to,
