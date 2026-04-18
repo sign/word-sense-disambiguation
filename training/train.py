@@ -131,6 +131,12 @@ def create_examples_for_synset(
     index_mapping = {old_idx: new_idx for new_idx, old_idx in enumerate(indices)}
 
     # Create one example for each sentence
+    letters = build_letters(tokenizer).letters
+    # Pick a random offset per sentence so the model sees correct answers
+    # spread across the whole letter range, not clustered near A. NOTA's slot
+    # at letters[NOTA_LETTER_INDEX] is fixed, so the options block must end
+    # before it.
+    max_offset = NOTA_LETTER_INDEX - len(shuffled_definitions)
     for sentence in synset["examples"]:
         try:
             marked_sentence = mark_word_in_sentence(sentence, word)
@@ -139,10 +145,12 @@ def create_examples_for_synset(
             # (e.g. "100" inside "100th"); skip so training matches inference.
             continue
 
+        start_offset = random.randint(0, max_offset) if max_offset > 0 else 0
+
         # Find correct answer after shuffling
         correct_original_idx = synset_to_definition[synset_id]
         correct_shuffled_idx = index_mapping[correct_original_idx]
-        correct_letter = build_letters(tokenizer).letters[correct_shuffled_idx]
+        correct_letter = letters[start_offset + correct_shuffled_idx]
 
         prompt = create_multiple_choice_prompt(
             word=word,
@@ -150,6 +158,7 @@ def create_examples_for_synset(
             marked_sentence=marked_sentence,
             definitions=shuffled_definitions,
             tokenizer=tokenizer,
+            start_offset=start_offset,
         )
 
         examples.append(TrainingExample(
@@ -229,12 +238,19 @@ def create_none_of_above_example(
     # The correct answer is "none of the above" — always the fixed NOTA letter.
     none_letter = build_letters(tokenizer).letters[NOTA_LETTER_INDEX]
 
+    # Random offset so NOTA examples also see the option block at varied
+    # positions — otherwise the model would learn "NOTA appears when options
+    # start at A" which is also a positional shortcut.
+    max_offset = NOTA_LETTER_INDEX - len(frequent_pos_definitions)
+    start_offset = random.randint(0, max_offset) if max_offset > 0 else 0
+
     prompt = create_multiple_choice_prompt(
         word=word,
         mask_token=tokenizer.mask_token,
         marked_sentence=marked_sentence,
         definitions=frequent_pos_definitions,
         tokenizer=tokenizer,
+        start_offset=start_offset,
     )
 
     return TrainingExample(
