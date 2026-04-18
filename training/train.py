@@ -131,6 +131,12 @@ def create_examples_for_synset(
     index_mapping = {old_idx: new_idx for new_idx, old_idx in enumerate(indices)}
 
     # Create one example for each sentence
+    letters = build_letters(tokenizer).letters
+    # Pick a random offset per sentence so the model sees correct answers
+    # spread across the whole letter range, not clustered near A. NOTA's slot
+    # at letters[NOTA_LETTER_INDEX] is fixed, so the options block must end
+    # before it.
+    max_offset = NOTA_LETTER_INDEX - len(shuffled_definitions)
     for sentence in synset["examples"]:
         try:
             marked_sentence = mark_word_in_sentence(sentence, word)
@@ -139,10 +145,12 @@ def create_examples_for_synset(
             # (e.g. "100" inside "100th"); skip so training matches inference.
             continue
 
+        start_offset = random.randint(0, max_offset) if max_offset > 0 else 0
+
         # Find correct answer after shuffling
         correct_original_idx = synset_to_definition[synset_id]
         correct_shuffled_idx = index_mapping[correct_original_idx]
-        correct_letter = build_letters(tokenizer).letters[correct_shuffled_idx]
+        correct_letter = letters[start_offset + correct_shuffled_idx]
 
         prompt = create_multiple_choice_prompt(
             word=word,
@@ -150,6 +158,7 @@ def create_examples_for_synset(
             marked_sentence=marked_sentence,
             definitions=shuffled_definitions,
             tokenizer=tokenizer,
+            start_offset=start_offset,
         )
 
         examples.append(TrainingExample(
@@ -229,12 +238,19 @@ def create_none_of_above_example(
     # The correct answer is "none of the above" — always the fixed NOTA letter.
     none_letter = build_letters(tokenizer).letters[NOTA_LETTER_INDEX]
 
+    # Random offset so NOTA examples also see the option block at varied
+    # positions — otherwise the model would learn "NOTA appears when options
+    # start at A" which is also a positional shortcut.
+    max_offset = NOTA_LETTER_INDEX - len(frequent_pos_definitions)
+    start_offset = random.randint(0, max_offset) if max_offset > 0 else 0
+
     prompt = create_multiple_choice_prompt(
         word=word,
         mask_token=tokenizer.mask_token,
         marked_sentence=marked_sentence,
         definitions=frequent_pos_definitions,
         tokenizer=tokenizer,
+        start_offset=start_offset,
     )
 
     return TrainingExample(
@@ -686,7 +702,13 @@ def main():
         total = mask.sum()
         return {"accuracy": float(correct) / max(int(total), 1)}
 
+    # When eval is enabled we save at the same cadence so
+    # load_best_model_at_end can compare eval metrics to saved checkpoints
+    # and restore the best-accuracy one at the end of training.
     eval_enabled = eval_dataset is not None
+    save_strategy = "steps" if eval_enabled else (
+        "epoch" if config.max_steps == -1 else "steps"
+    )
     training_args = TrainingArguments(
         output_dir=str(config.output_dir),
         num_train_epochs=config.num_epochs,
@@ -701,8 +723,12 @@ def main():
         logging_steps=10,
         eval_strategy="steps" if eval_enabled else "no",
         eval_steps=config.eval_steps if eval_enabled else None,
-        save_strategy="epoch" if config.max_steps == -1 else "steps",
-        save_total_limit=1,
+        save_strategy=save_strategy,
+        save_steps=config.eval_steps if save_strategy == "steps" else None,
+        save_total_limit=2,
+        load_best_model_at_end=eval_enabled,
+        metric_for_best_model="accuracy" if eval_enabled else None,
+        greater_is_better=True if eval_enabled else None,
         bf16=torch.cuda.is_available(),
         dataloader_num_workers=0,
         report_to=config.report_to,
