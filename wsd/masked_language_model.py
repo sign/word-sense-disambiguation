@@ -165,17 +165,17 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
 
 
 def _prediction_positions(input_ids: torch.Tensor, mask_token_id: int) -> torch.Tensor:
-    """LongTensor ``(batch,)`` column index of the single answer position per row.
+    """LongTensor ``(batch,)`` column index of the first ``[MASK]`` per row.
 
-    Each WSD prompt contains exactly one ``[MASK]``; we return integer positions
-    (not a boolean mask) so the model can gather rows via indexed select. Bool
-    ``masked_select`` would force the GPU to report ``mask.sum()`` back to the
-    host before sizing its output — a sync that drains the stream and serializes
-    the multi-chunk dispatch in ``_unmask_chunks_cuda_parallel``.
+    Returned as integer positions (not a boolean mask) so the model can gather
+    rows via indexed select. A bool ``masked_select`` would force the GPU to
+    report ``mask.sum()`` back to the host before sizing its output — a sync
+    that drains the stream and serializes the multi-chunk dispatch in
+    ``_unmask_chunks_cuda_parallel``. Rows with multiple masks use the first
+    (argmax returns the first max); rows with no mask raise.
     """
     is_mask = input_ids == mask_token_id
-    per_row = is_mask.sum(dim=1)
-    if bool((per_row != 1).any()):
+    if bool((is_mask.sum(dim=1) == 0).any()):
         raise PromptMaskError()
     return is_mask.int().argmax(dim=1)
 
