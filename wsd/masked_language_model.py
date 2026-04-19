@@ -83,9 +83,22 @@ def unmask_token(text: str) -> UnmaskResult:
     return UnmaskResult(token=decoded_token, probabilities=probs)
 
 
+# Sub-batch size used when length-bucketing inside ``unmask_token_batch``.
+# Eight was the throughput sweet spot on GB10 (see wsd.bench_inference); small
+# enough that padding-within-chunk stays cheap, large enough to keep the GPU fed.
+_BUCKET_CHUNK_SIZE = 8
+
+
 def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     """
     Batch version of unmask_token that processes multiple texts in parallel.
+
+    Inputs are sorted by tokenized length and processed in fixed-size chunks
+    so each forward pass only pads up to the longest prompt *in its chunk*
+    rather than the longest in the whole batch. Results are un-sorted before
+    return, so callers still see outputs in input order. For the typical WSD
+    prompt distribution (57..262 tokens) this roughly doubles throughput at
+    bs>=8 — see wsd.bench_inference for numbers.
 
     Args:
         texts: List of strings, each containing a mask token
@@ -101,10 +114,33 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
 
     components = load_model()
 
-    # Tokenize all texts with padding
+    # Sort by pre-tokenized length so each chunk below has similar-length
+    # prompts. We call the tokenizer twice (once here for lengths, once below
+    # for padded tensors), but the first call is Python-side and cheap.
+    lengths = [
+        len(components.tokenizer(t, add_special_tokens=True)["input_ids"])
+        for t in texts
+    ]
+    order = sorted(range(len(texts)), key=lambda i: lengths[i])
+
+    results: list[UnmaskResult | None] = [None] * len(texts)
+    for start in range(0, len(order), _BUCKET_CHUNK_SIZE):
+        chunk_idx = order[start : start + _BUCKET_CHUNK_SIZE]
+        chunk_texts = [texts[i] for i in chunk_idx]
+        for orig_idx, result in zip(
+            chunk_idx, _unmask_chunk(chunk_texts, components), strict=True,
+        ):
+            results[orig_idx] = result
+
+    # All slots have been filled by the loop above; the cast is just to
+    # satisfy the type checker.
+    return [r for r in results if r is not None]
+
+
+def _unmask_chunk(texts: list[str], components: ModelComponents) -> list[UnmaskResult]:
+    """Single forward pass for a length-homogeneous chunk."""
     inputs = components.tokenizer(texts, return_tensors="pt", padding=True).to(components.device)
 
-    # Find mask token positions for each example in the batch
     mask_positions = []
     for i in range(len(texts)):
         mask_idx = (inputs.input_ids[i] == components.tokenizer.mask_token_id).nonzero()
@@ -112,11 +148,9 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
             raise PromptMaskError()
         mask_positions.append((i, mask_idx[0, 0].item()))
 
-    # Run batched forward pass
     with torch.no_grad():
         outputs = components.model(**inputs)
 
-    # Extract predictions for each mask token
     results = []
     for batch_idx, seq_idx in mask_positions:
         logits = outputs.logits[batch_idx, seq_idx]
@@ -124,7 +158,6 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
         compact_id = int(torch.argmax(probs).item())
         decoded_token = components.letter_set.letters[compact_id]
         results.append(UnmaskResult(token=decoded_token, probabilities=probs))
-
     return results
 
 

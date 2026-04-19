@@ -134,5 +134,26 @@ def test_unmask_token_batch_consistency():
         assert batch_result.token == seq_result.token
 
 
+def test_unmask_token_batch_preserves_order_with_varied_lengths():
+    """Varied prompt lengths exercise the internal length-bucketing sort; the
+    returned results must still be in input order, not sorted order."""
+    components = load_model()
+    mask = components.tokenizer.mask_token
+    # Mix short and long prompts; interleaved so sorted-order != input-order.
+    texts = [
+        _mc_prompt(mask, "A"),                                # short
+        _mc_prompt(mask, "B") + "\n" + ("extra context. " * 40),  # long
+        _mc_prompt(mask, "C"),                                # short
+        _mc_prompt(mask, "D") + "\n" + ("padding text. " * 20),   # medium
+    ]
+
+    batch_results = unmask_token_batch(texts)
+    sequential_results = [unmask_token(t) for t in texts]
+
+    assert len(batch_results) == len(texts)
+    for batch_result, seq_result in zip(batch_results, sequential_results, strict=True):
+        assert batch_result.token == seq_result.token
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
