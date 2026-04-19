@@ -204,23 +204,6 @@ def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list
     return results
 
 
-def get_definitions_single(word: str, pos: str, language: str = "en") -> list[Definition]:
-    """
-    Convenience function to fetch definitions for a single word.
-
-    Args:
-        word: Word form to look up
-        pos: Part of speech
-        language: Language code (default: "en")
-
-    Returns:
-        List of Definition objects for the word
-    """
-    query = WordQuery(form=word, pos=pos)
-    results = get_definitions([query], language)
-    return results[0] if results else []
-
-
 def get_choice_probabilities(
     probs, definitions: list[Definition], start_offset: int = 0,
 ) -> list[float]:

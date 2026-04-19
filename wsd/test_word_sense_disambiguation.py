@@ -17,7 +17,6 @@ from wsd.word_sense_disambiguation import (
     disambiguate_word_batch,
     get_choice_probabilities,
     get_definitions,
-    get_definitions_single,
 )
 
 
@@ -118,27 +117,6 @@ def test_get_definitions_api_error():
         # Should return empty list for failed query
         assert len(results) == 1
         assert results[0] == []
-
-
-def test_get_definitions_single():
-    """Test get_definitions_single convenience function"""
-    with requests_mock.Mocker() as m:
-        url = f"{WORDNET_URL}/lexicons/omw-en:1.4/definitions"
-        mock_response = {
-            "data": [
-                {
-                    "definitions": {
-                        "omw-en-1234-n": "a financial institution"
-                    }
-                }
-            ]
-        }
-        m.post(url, json=mock_response)
-
-        results = get_definitions_single("bank", "n")
-
-        assert len(results) == 1
-        assert results[0].synset_id == "omw-en-1234-n"
 
 
 def test_create_marked_sentence(monkeypatch):
