@@ -155,52 +155,34 @@ def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list
 
 
 def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
-    """
-    Fetch definitions for multiple words using the batch endpoint.
+    """Fetch definitions for multiple words using the batch endpoint.
 
-    For adjectives (pos="a"), automatically fetches and concatenates definitions
-    from both "a" (adjective) and "s" (adjective satellite) categories.
-
-    Args:
-        queries: List of WordQuery objects with form and pos
-        language: Language code (default: "en")
-
-    Returns:
-        List of definition lists, one per query (in same order as input).
-        Each definition list contains Definition objects.
+    For adjectives (``pos="a"``), fetches both ``"a"`` (adjective) and ``"s"``
+    (satellite adjective) and concatenates them; other POS tags pass through
+    unchanged. Output is in input order.
     """
     if not queries:
         return []
 
-    # Expand queries: when pos is "a", we need to query both "a" and "s"
-    expanded_queries = []
-    query_mapping = []  # Maps expanded query index to (original query index, pos_type)
-
+    # Expand "a" queries to (a, s); track which output slot each expanded query
+    # feeds. Non-adjective queries map to exactly one slot, so the merge below
+    # uses a uniform extend() and there's no need to tag pos_type separately.
+    expanded_queries: list[WordQuery] = []
+    origin: list[int] = []
     for i, q in enumerate(queries):
         if q.pos == "a":
-            # Add both "a" and "s" queries
             expanded_queries.append(WordQuery(form=q.form, pos="a"))
-            query_mapping.append((i, "a"))
             expanded_queries.append(WordQuery(form=q.form, pos="s"))
-            query_mapping.append((i, "s"))
+            origin.extend([i, i])
         else:
             expanded_queries.append(q)
-            query_mapping.append((i, None))
+            origin.append(i)
 
-    # Get definitions for all expanded queries
     expanded_results = _get_definitions_raw(expanded_queries, language)
 
-    # Collapse results back to match original queries
-    results = [[] for _ in queries]
-    for idx, (orig_idx, pos_type) in enumerate(query_mapping):
-        if pos_type is None:
-            # Not an "a" query, just copy the result
-            results[orig_idx] = expanded_results[idx]
-        else:
-            # This is an "a" or "s" part of an adjective query
-            # Concatenate to the existing result
-            results[orig_idx].extend(expanded_results[idx])
-
+    results: list[list[Definition]] = [[] for _ in queries]
+    for orig_idx, defs in zip(origin, expanded_results, strict=True):
+        results[orig_idx].extend(defs)
     return results
 
 
