@@ -27,6 +27,13 @@ def _answer_vocab_size(config: ModernBertConfig) -> int:
     return int(getattr(config, "answer_vocab_size", config.vocab_size))
 
 
+class MutuallyExclusivePredictionArgsError(ValueError):
+    def __init__(self):
+        super().__init__(
+            "prediction_positions and labels are mutually exclusive",
+        )
+
+
 class WSDModernBertForMaskedLM(ModernBertForMaskedLM):
     """ModernBertForMaskedLM with a compact answer-only decoder."""
 
@@ -77,9 +84,7 @@ class WSDModernBertForMaskedLM(ModernBertForMaskedLM):
                 # Would produce a (batch, answer_vocab) logits tensor against a
                 # (B, L) labels tensor — the shape error from loss_function is
                 # inscrutable, so surface the misuse at the branch point.
-                raise ValueError(
-                    "prediction_positions and labels are mutually exclusive",
-                )
+                raise MutuallyExclusivePredictionArgsError()
             batch_idx = torch.arange(
                 last_hidden_state.size(0), device=last_hidden_state.device,
             )
