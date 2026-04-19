@@ -122,7 +122,7 @@ def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list
     }
 
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=30)
 
         if response.status_code != 200:
             print(f"Error: API returned status code {response.status_code}")
