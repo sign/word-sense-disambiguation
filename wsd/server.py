@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import UTC, datetime
 
@@ -13,6 +14,15 @@ from starlette.templating import Jinja2Templates
 
 from wsd.env import WORDNET_URL
 from wsd.word_sense_disambiguation import disambiguate
+
+# Honor LOG_LEVEL from the environment so the Dockerfile (or a local operator)
+# can dial in verbosity without touching code. Defaulting to INFO means our
+# module loggers (e.g. wsd.word_sense_disambiguation) emit their warnings and
+# above even though nothing else configures root logging.
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 templates = Jinja2Templates(directory=os.path.dirname(__file__))
 

@@ -2,7 +2,8 @@ FROM nvcr.io/nvidia/pytorch:26.03-py3
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    LOG_LEVEL=DEBUG
 
 WORKDIR /app
 
