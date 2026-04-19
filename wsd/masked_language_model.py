@@ -74,23 +74,7 @@ def load_model(model_name: str = _DEFAULT_MODEL) -> ModelComponents:
 
 def unmask_token(text: str) -> UnmaskResult:
     components = load_model()
-
-    inputs = components.tokenizer(text, return_tensors="pt").to(components.device)
-    positions = _prediction_positions(
-        inputs.input_ids, components.tokenizer.mask_token_id,
-    )
-
-    with torch.no_grad():
-        outputs = components.model(**inputs, prediction_positions=positions)
-
-    # With prediction_positions the model gathers one row per example, so
-    # logits is shape (batch, answer_vocab); single prompt → one row.
-    probs = torch.softmax(outputs.logits[0], dim=-1)
-    compact_id = int(torch.argmax(probs).item())
-
-    return UnmaskResult(
-        token=components.letter_set.letters[compact_id], probabilities=probs,
-    )
+    return _unmask_chunk([text], components)[0]
 
 
 # Sub-batch size used when length-bucketing inside ``unmask_token_batch``.
@@ -228,11 +212,15 @@ def _unmask_chunks_cuda_parallel(
 
 def _unmask_chunk(texts: list[str], components: ModelComponents) -> list[UnmaskResult]:
     """Single forward pass for a length-homogeneous chunk."""
-    inputs = components.tokenizer(texts, return_tensors="pt", padding=True).to(components.device)
-    positions = _prediction_positions(
-        inputs.input_ids, components.tokenizer.mask_token_id,
+    # Compute mask positions on the CPU tensor before moving to device so the
+    # validation sum/any doesn't force a device→host sync.
+    cpu_inputs = components.tokenizer(texts, return_tensors="pt", padding=True)
+    positions_cpu = _prediction_positions(
+        cpu_inputs.input_ids, components.tokenizer.mask_token_id,
     )
 
+    inputs = cpu_inputs.to(components.device)
+    positions = positions_cpu.to(components.device)
     with torch.no_grad():
         outputs = components.model(**inputs, prediction_positions=positions)
 

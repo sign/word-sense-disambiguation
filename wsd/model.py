@@ -73,6 +73,13 @@ class WSDModernBertForMaskedLM(ModernBertForMaskedLM):
         #   stock ModernBERT behavior of filtering out ``sparse_pred_ignore_index``
         #   positions before the head, saving head compute on non-mask tokens.
         if prediction_positions is not None:
+            if labels is not None:
+                # Would produce a (batch, answer_vocab) logits tensor against a
+                # (B, L) labels tensor — the shape error from loss_function is
+                # inscrutable, so surface the misuse at the branch point.
+                raise ValueError(
+                    "prediction_positions and labels are mutually exclusive",
+                )
             batch_idx = torch.arange(
                 last_hidden_state.size(0), device=last_hidden_state.device,
             )

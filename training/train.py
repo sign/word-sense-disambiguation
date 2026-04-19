@@ -710,6 +710,13 @@ def main():
     def compute_metrics(eval_pred):
         predictions, labels = eval_pred  # predictions: (N_masks,), labels: (B, L)
         labels_flat = labels[labels != -100]
+        # Alignment between preds and labels depends on both sides flattening
+        # row-major; if that invariant ever drifts (e.g. a preprocess hook
+        # reshapes labels), accuracy would silently go wrong rather than error.
+        assert predictions.shape == labels_flat.shape, (
+            f"sparse prediction/label shape mismatch: "
+            f"{predictions.shape} vs {labels_flat.shape}"
+        )
         correct = (predictions == labels_flat).sum()
         total = labels_flat.size
         return {"accuracy": float(correct) / max(int(total), 1)}
