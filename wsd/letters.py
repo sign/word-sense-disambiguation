@@ -39,8 +39,11 @@ def _candidate_pools() -> list[list[str]]:
     """
     latin = list(string.ascii_uppercase + string.ascii_lowercase)
     digits = list(string.digits)
-    # '.' and other format-significant punctuation excluded (clashes with "A. " template)
-    safe_symbols = list("!@#$%^&*+=<>?/|~`'()[]{}_-")
+    # Excluded:
+    #   '.' — clashes with the "A. " option template
+    #   '*' — clashes with the *word* marker in marked sentences
+    #   "'" — rendered option "'. def" is visually ambiguous with contractions
+    safe_symbols = list("!@#$%^&+=<>?/|~`()[]{}_-")
     greek_upper = [chr(c) for c in range(0x0391, 0x03A9 + 1) if c != 0x03A2]
     greek_lower = [chr(c) for c in range(0x03B1, 0x03C9 + 1)]
     cyrillic_upper = [chr(c) for c in range(0x0410, 0x042F + 1)]
