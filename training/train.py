@@ -692,6 +692,20 @@ def main():
     # Accuracy on the held-out eval set, measured only at mask positions.
     # preprocess_logits_for_metrics keeps only the argmax per position so we
     # don't accumulate (N, L, V) logits across the entire eval set.
+    #
+    # This shape contract assumes the model returns dense logits of shape
+    # (batch, seq_len, vocab). ModernBERT's ``sparse_prediction`` mode filters
+    # those to (num_masks, vocab) before returning, which would make
+    # ``predictions`` collapse to (num_masks,) while ``labels`` stays
+    # (batch, seq_len) — the equality check in compute_metrics would then
+    # broadcast incorrectly. Assert the mode is off rather than accept a
+    # silently-wrong accuracy number.
+    if getattr(model.config, "sparse_prediction", False):
+        raise RuntimeError(
+            "compute_metrics assumes dense logits; "
+            "set config.sparse_prediction=False before training."
+        )
+
     def preprocess_logits_for_metrics(logits, labels):
         return logits.argmax(dim=-1)
 
