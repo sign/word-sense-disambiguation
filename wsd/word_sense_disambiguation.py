@@ -297,51 +297,33 @@ def disambiguate_word_batch(
 
     components = load_model()
 
-    # Prepare prompts and track which ones are valid
-    prompts = []
-    valid_indices = []  # Track which inputs have definitions
-    for i, input_obj in enumerate(batch_data):
-        if input_obj.definitions:
-            text = create_multiple_choice_prompt(
-                input_obj.word,
-                components.tokenizer.mask_token,
-                input_obj.marked_sentence,
-                input_obj.definitions,
-                components.tokenizer,
-                start_offset=start_offset,
-            )
-            prompts.append(text)
-            valid_indices.append(i)
+    # Build prompts only for inputs with definitions. Inputs without definitions
+    # get a fixed NO_DEFINITIONS_FOUND result without touching the model.
+    results: list[DisambiguationResult] = [
+        DisambiguationResult(synset_id=NO_DEFINITIONS_FOUND, definition="", confidence=0.0)
+        for _ in batch_data
+    ]
+    valid = [(i, inp) for i, inp in enumerate(batch_data) if inp.definitions]
+    if not valid:
+        return results
 
-    # If no valid prompts, return empty results for all
-    if not prompts:
-        return [
-            DisambiguationResult(
-                synset_id=NO_DEFINITIONS_FOUND,
-                definition="",
-                confidence=0.0
-            )
-            for _ in batch_data
-        ]
-
-    # Get predictions for all prompts in batch
+    prompts = [
+        create_multiple_choice_prompt(
+            inp.word,
+            components.tokenizer.mask_token,
+            inp.marked_sentence,
+            inp.definitions,
+            components.tokenizer,
+            start_offset=start_offset,
+        )
+        for _, inp in valid
+    ]
     batch_results = unmask_token_batch(prompts)
 
-    # Process results
-    valid_set = set(valid_indices)
-    results = []
-    result_idx = 0
-    for i, input_obj in enumerate(batch_data):
-        if i not in valid_set:
-            results.append(DisambiguationResult(
-                synset_id=NO_DEFINITIONS_FOUND, definition="", confidence=0.0,
-            ))
-            continue
-        unmask_result = batch_results[result_idx]
-        result_idx += 1
-        results.append(_result_from_probs(
-            unmask_result.probabilities, input_obj.definitions, start_offset=start_offset,
-        ))
+    for (i, inp), unmask_result in zip(valid, batch_results, strict=True):
+        results[i] = _result_from_probs(
+            unmask_result.probabilities, inp.definitions, start_offset=start_offset,
+        )
     return results
 
 
