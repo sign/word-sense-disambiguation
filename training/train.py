@@ -393,54 +393,49 @@ class WSDDataset(Dataset):
         letter_set: LetterSet,
         max_length: int = DEFAULT_MAX_LENGTH
     ):
-        """
-        Initialize the dataset.
-
-        Args:
-            examples: List of training examples
-            tokenizer: The tokenizer to use
-            letter_set: Mapping from compact answer ids to letters/token ids
-            max_length: Maximum sequence length
-        """
-        self.examples = examples
         self.tokenizer = tokenizer
         self.letter_to_compact = {letter: i for i, letter in enumerate(letter_set.letters)}
         self.max_length = max_length
+
+        # Filter out examples whose prompt has no mask token after truncation.
+        # A mask-less example produces all-(-100) labels, which contributes
+        # nothing to the loss but still costs a full forward pass — and the
+        # old __getitem__ path emitted one warning per access (N epochs ×
+        # num_workers), drowning real warnings. Catch them once, here.
+        mask_id = tokenizer.mask_token_id
+        kept: list[TrainingExample] = []
+        dropped = 0
+        for ex in examples:
+            input_ids = tokenizer(
+                ex.prompt, truncation=True, max_length=max_length,
+            )["input_ids"]
+            if mask_id in input_ids:
+                kept.append(ex)
+            else:
+                dropped += 1
+        if dropped:
+            warnings.warn(
+                f"Dropped {dropped}/{len(examples)} WSD example(s) whose prompt "
+                f"has no mask token after truncation to max_length={max_length}",
+                stacklevel=2,
+            )
+        self.examples = kept
 
     def __len__(self) -> int:
         return len(self.examples)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         example = self.examples[idx]
-
-        # Tokenize the prompt
         encoding = self.tokenizer(
-            example.prompt,
-            truncation=True,
-            max_length=self.max_length,
+            example.prompt, truncation=True, max_length=self.max_length,
         )
-
-        # Compact id (index into LetterSet) for the correct answer letter.
+        input_ids = encoding["input_ids"]
+        # __init__ guarantees a mask survives truncation, so .index is safe.
+        mask_pos = input_ids.index(self.tokenizer.mask_token_id)
         answer_compact_id = self.letter_to_compact[example.correct_answer_letter]
 
-        # Find the mask token position
-        input_ids = encoding["input_ids"]
-        mask_token_positions = [
-            i for i, token_id in enumerate(input_ids)
-            if token_id == self.tokenizer.mask_token_id
-        ]
-
-        # Create labels (all -100 except at mask position)
         labels = [-100] * len(input_ids)
-
-        if not mask_token_positions:
-            warnings.warn(
-                f"No mask token found in prompt for example {idx} "
-                f"(word: {example.word}). This example will be skipped during training.",
-                stacklevel=2
-            )
-        else:
-            labels[mask_token_positions[0]] = answer_compact_id
+        labels[mask_pos] = answer_compact_id
 
         return {
             "input_ids": input_ids,
