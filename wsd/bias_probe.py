@@ -30,10 +30,14 @@ import argparse
 import random
 from dataclasses import dataclass
 
-import wn
 from tqdm import tqdm
 
-from wsd.benchmark import WordNetExample, collect_wordnet_examples
+from wsd.benchmark import (
+    WordNetExample,
+    collect_wordnet_examples,
+    fetch_synset_definitions,
+    load_wn_english,
+)
 from wsd.letters import NOTA_LETTER_INDEX
 from wsd.prompt import Definition
 from wsd.word_sense_disambiguation import (
@@ -55,43 +59,16 @@ class OffsetResult:
         return self.n_correct / self.n_evaluated if self.n_evaluated else 0.0
 
 
-def _load_wn():
-    """Load or download the omw-en:1.4 lexicon."""
-    try:
-        return wn.Wordnet(lexicon="omw-en:1.4")
-    except wn.Error:
-        wn.download("omw-en:1.4")
-        return wn.Wordnet(lexicon="omw-en:1.4")
-
-
-def _fetch_definitions_for_example(
-    en: wn.Wordnet, ex: WordNetExample,
-) -> list[Definition] | None:
-    """Mirror build_eval_examples_from_wn's lookup: fetch defs for (lemma, pos).
-
-    Returns None when the example's own synset isn't in the wn lookup (can
-    happen when the lexicon disagrees with the example's metadata), or when
-    there are no definitions at all.
-    """
-    pos_options = {"a", "s"} if ex.pos == "a" else {ex.pos}
-    defs: dict[str, str] = {}
-    for word in en.words(form=ex.lemma):
-        for synset in word.synsets():
-            if synset.pos not in pos_options:
-                continue
-            text = synset.definition()
-            if text:
-                defs[synset.id] = text
-    if ex.synset_id not in defs:
-        return None
-    return [Definition(synset_id=sid, definition=text) for sid, text in defs.items()]
-
-
 def _sample_examples_with_defs(
     n_examples: int, seed: int,
 ) -> tuple[list[WordNetExample], list[list[Definition]]]:
-    """Sample ``n_examples`` and fetch their definitions once (reused across offsets)."""
-    en = _load_wn()
+    """Sample ``n_examples`` and fetch their definitions once (reused across offsets).
+
+    Skips examples whose own ``synset_id`` isn't in the wn lookup — that happens
+    when the lexicon disagrees with the example's metadata and we'd have no
+    correct answer to compare against.
+    """
+    en = load_wn_english()
 
     all_examples = list(collect_wordnet_examples())
     rng = random.Random(seed)
@@ -100,11 +77,13 @@ def _sample_examples_with_defs(
     out_ex: list[WordNetExample] = []
     out_defs: list[list[Definition]] = []
     for ex in all_examples:
-        defs = _fetch_definitions_for_example(en, ex)
-        if defs is None:
+        defs = fetch_synset_definitions(en, ex.lemma, ex.pos)
+        if ex.synset_id not in defs:
             continue
         out_ex.append(ex)
-        out_defs.append(defs)
+        out_defs.append(
+            [Definition(synset_id=sid, definition=text) for sid, text in defs.items()],
+        )
         if len(out_ex) >= n_examples:
             break
     return out_ex, out_defs

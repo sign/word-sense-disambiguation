@@ -23,6 +23,36 @@ class WordNetExample:
     sentence: str  # original, unmarked example
 
 
+def load_wn_english() -> wn.Wordnet:
+    """Load (downloading on first use) the omw-en:1.4 WordNet lexicon."""
+    try:
+        return wn.Wordnet(lexicon="omw-en:1.4")
+    except wn.Error:
+        wn.download("omw-en:1.4")
+        return wn.Wordnet(lexicon="omw-en:1.4")
+
+
+def fetch_synset_definitions(en: wn.Wordnet, lemma: str, pos: str) -> dict[str, str]:
+    """Return ``{synset_id: definition_text}`` for ``(lemma, pos)``.
+
+    For ``pos="a"`` both "a" (adjective) and "s" (satellite adjective) synsets
+    are included — this matches the adjective expansion that
+    :func:`wsd.word_sense_disambiguation.get_definitions` does at inference
+    time, so training-time eval and bias probing see the same option set the
+    deployed pipeline would.
+    """
+    pos_options = {"a", "s"} if pos == "a" else {pos}
+    defs: dict[str, str] = {}
+    for word in en.words(form=lemma):
+        for synset in word.synsets():
+            if synset.pos not in pos_options:
+                continue
+            text = synset.definition()
+            if text:
+                defs[synset.id] = text
+    return defs
+
+
 def collect_wordnet_examples():
     """Yield every usable (synset, word form, example) tuple from OMW English.
 
@@ -30,13 +60,7 @@ def collect_wordnet_examples():
     the form can't be marked with clean word boundaries.
     """
 
-    # Ensure omw-en:1.4 is downloaded
-    try:
-        en = wn.Wordnet(lexicon="omw-en:1.4")
-    except wn.Error:
-        print("Downloading omw-en:1.4...")
-        wn.download("omw-en:1.4")
-        en = wn.Wordnet(lexicon="omw-en:1.4")
+    en = load_wn_english()
 
     # Iterate through all synsets
     for synset in en.synsets():
