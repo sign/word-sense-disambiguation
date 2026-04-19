@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import wn
 from tqdm import tqdm
 
-from wsd.prompt import WordNotFoundError, mark_word_in_sentence
+from wsd.prompt import SentenceAlreadyMarkedError, WordNotFoundError, mark_word_in_sentence
 from wsd.word_sense_disambiguation import (
     DisambiguationInput,
     WordQuery,
@@ -52,7 +52,7 @@ def collect_wordnet_examples():
                 for example in examples:
                     try:
                         marked_text = mark_word_in_sentence(example, form)
-                    except WordNotFoundError:
+                    except (WordNotFoundError, SentenceAlreadyMarkedError):
                         continue
                     yield WordNetExample(
                         synset.id, form, word.lemma(), word.pos, marked_text, example
