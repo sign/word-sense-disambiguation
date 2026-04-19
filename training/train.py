@@ -531,6 +531,27 @@ def print_gpu_memory():
         print(f"  Device {i}: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
 
 
+class SparsePredictionEnabledError(RuntimeError):
+    """Raised when sparse_prediction is on — it breaks compute_metrics' shape assumptions."""
+    def __init__(self):
+        super().__init__(
+            "compute_metrics assumes dense (batch, seq_len, vocab) logits, "
+            "but model.config.sparse_prediction=True returns (num_masks, vocab). "
+            "Set config.sparse_prediction=False before training."
+        )
+
+
+def _assert_dense_logits(model) -> None:
+    # compute_metrics/preprocess_logits_for_metrics below assume dense logits of
+    # shape (batch, seq_len, vocab). ModernBERT's ``sparse_prediction`` mode
+    # filters to (num_masks, vocab), which would make ``predictions`` collapse
+    # to (num_masks,) while ``labels`` stays (batch, seq_len) — the equality
+    # check would then broadcast incorrectly and report a silently-wrong
+    # accuracy.
+    if getattr(model.config, "sparse_prediction", False):
+        raise SparsePredictionEnabledError()
+
+
 def print_sample_example(example: TrainingExample):
     """Print a sample training example."""
     print("\n" + "=" * 80)
@@ -692,19 +713,7 @@ def main():
     # Accuracy on the held-out eval set, measured only at mask positions.
     # preprocess_logits_for_metrics keeps only the argmax per position so we
     # don't accumulate (N, L, V) logits across the entire eval set.
-    #
-    # This shape contract assumes the model returns dense logits of shape
-    # (batch, seq_len, vocab). ModernBERT's ``sparse_prediction`` mode filters
-    # those to (num_masks, vocab) before returning, which would make
-    # ``predictions`` collapse to (num_masks,) while ``labels`` stays
-    # (batch, seq_len) — the equality check in compute_metrics would then
-    # broadcast incorrectly. Assert the mode is off rather than accept a
-    # silently-wrong accuracy number.
-    if getattr(model.config, "sparse_prediction", False):
-        raise RuntimeError(
-            "compute_metrics assumes dense logits; "
-            "set config.sparse_prediction=False before training."
-        )
+    _assert_dense_logits(model)
 
     def preprocess_logits_for_metrics(logits, labels):
         return logits.argmax(dim=-1)
