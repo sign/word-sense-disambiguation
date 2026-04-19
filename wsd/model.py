@@ -14,6 +14,7 @@ Config fields consumed
   (otherwise HF will try to re-tie the compact decoder to the full embeddings
   and fail).
 """
+import torch
 from torch import nn
 from transformers.modeling_outputs import MaskedLMOutput
 from transformers.models.modernbert.modeling_modernbert import (
@@ -49,6 +50,7 @@ class WSDModernBertForMaskedLM(ModernBertForMaskedLM):
         position_ids=None,
         inputs_embeds=None,
         labels=None,
+        prediction_positions=None,
         **kwargs,
     ):
         outputs = self.model(
@@ -60,7 +62,22 @@ class WSDModernBertForMaskedLM(ModernBertForMaskedLM):
         )
         last_hidden_state = outputs[0]
 
-        if self.sparse_prediction and labels is not None:
+        # Two sparse paths feed the same compact decoder:
+        # - ``prediction_positions`` (LongTensor, shape ``(batch,)``): inference
+        #   path. One answer column per row — we gather those rows via indexed
+        #   select so the output shape is statically ``(batch, hidden)``. A
+        #   boolean mask here would force ``masked_select`` to read ``mask.sum()``
+        #   from the GPU to size its output, draining the CUDA stream and
+        #   serializing the per-chunk dispatch in ``_unmask_chunks_cuda_parallel``.
+        # - ``self.sparse_prediction`` + labels: training/eval path. Mirrors the
+        #   stock ModernBERT behavior of filtering out ``sparse_pred_ignore_index``
+        #   positions before the head, saving head compute on non-mask tokens.
+        if prediction_positions is not None:
+            batch_idx = torch.arange(
+                last_hidden_state.size(0), device=last_hidden_state.device,
+            )
+            last_hidden_state = last_hidden_state[batch_idx, prediction_positions]
+        elif self.sparse_prediction and labels is not None:
             labels = labels.view(-1)
             last_hidden_state = last_hidden_state.view(labels.shape[0], -1)
             mask_tokens = labels != self.sparse_pred_ignore_index
