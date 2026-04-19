@@ -2,6 +2,7 @@ import os
 import time
 from dataclasses import dataclass
 from functools import cache
+from typing import cast
 
 import torch
 from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
@@ -84,8 +85,8 @@ def unmask_token(text: str) -> UnmaskResult:
 
 
 # Sub-batch size used when length-bucketing inside ``unmask_token_batch``.
-# Eight was the throughput sweet spot on GB10 (see wsd.bench_inference); small
-# enough that padding-within-chunk stays cheap, large enough to keep the GPU fed.
+# Eight was the throughput sweet spot on GB10 — small enough that
+# padding-within-chunk stays cheap, large enough to keep the GPU fed.
 _BUCKET_CHUNK_SIZE = 8
 
 
@@ -98,7 +99,7 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     rather than the longest in the whole batch. Results are un-sorted before
     return, so callers still see outputs in input order. For the typical WSD
     prompt distribution (57..262 tokens) this roughly doubles throughput at
-    bs>=8 — see wsd.bench_inference for numbers.
+    large batch sizes.
 
     Args:
         texts: List of strings, each containing a mask token
@@ -132,15 +133,19 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
         ):
             results[orig_idx] = result
 
-    # All slots have been filled by the loop above; the cast is just to
-    # satisfy the type checker.
-    return [r for r in results if r is not None]
+    # Every slot must be populated — callers (e.g. disambiguate_word_batch)
+    # index positionally, so a short list would surface as a confusing
+    # IndexError downstream rather than a clear failure here.
+    assert all(r is not None for r in results), "unmask_token_batch left slots unfilled"
+    return cast(list[UnmaskResult], results)
 
 
 def _unmask_chunk(texts: list[str], components: ModelComponents) -> list[UnmaskResult]:
     """Single forward pass for a length-homogeneous chunk."""
+    # Tokenize all texts with padding
     inputs = components.tokenizer(texts, return_tensors="pt", padding=True).to(components.device)
 
+    # Find mask token positions for each example in the batch
     mask_positions = []
     for i in range(len(texts)):
         mask_idx = (inputs.input_ids[i] == components.tokenizer.mask_token_id).nonzero()
@@ -148,9 +153,11 @@ def _unmask_chunk(texts: list[str], components: ModelComponents) -> list[UnmaskR
             raise PromptMaskError()
         mask_positions.append((i, mask_idx[0, 0].item()))
 
+    # Run batched forward pass
     with torch.no_grad():
         outputs = components.model(**inputs)
 
+    # Extract predictions for each mask token
     results = []
     for batch_idx, seq_idx in mask_positions:
         logits = outputs.logits[batch_idx, seq_idx]
