@@ -625,6 +625,12 @@ def main():
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
     )
 
+    # Run the LM head only on mask positions — every training example has
+    # exactly one unmasked label (the answer slot), so the head skips ~250x
+    # non-mask positions (avg prompt length ~150, one mask per prompt).
+    # Inference uses a parallel path via ``prediction_positions`` in model.py.
+    model.sparse_prediction = True
+
     # If we loaded a pristine checkpoint the decoder is still full-vocab; prune
     # it down to the 128 answer-letter rows. When resuming from a previously
     # pruned checkpoint the decoder already has 128 outputs and we skip prune.
@@ -691,17 +697,28 @@ def main():
     if training_examples:
         print_sample_example(training_examples[0])
 
-    # Accuracy on the held-out eval set, measured only at mask positions.
-    # preprocess_logits_for_metrics keeps only the argmax per position so we
-    # don't accumulate (N, L, V) logits across the entire eval set.
+    # Accuracy on the held-out eval set. With ``sparse_prediction``, the model
+    # returns logits of shape (num_masks, answer_vocab) — one row per label
+    # that survived the ``!= -100`` filter. ``preprocess_logits_for_metrics``
+    # collapses those to predicted compact-ids so Trainer doesn't accumulate
+    # per-vocab logits across the eval set. ``compute_metrics`` flattens
+    # labels the same way (row-major over (batch, seq), selecting non-ignored
+    # positions) so predictions and labels line up 1:1.
     def preprocess_logits_for_metrics(logits, labels):
         return logits.argmax(dim=-1)
 
     def compute_metrics(eval_pred):
-        predictions, labels = eval_pred  # predictions already argmax'd
-        mask = labels != -100
-        correct = ((predictions == labels) & mask).sum()
-        total = mask.sum()
+        predictions, labels = eval_pred  # predictions: (N_masks,), labels: (B, L)
+        labels_flat = labels[labels != -100]
+        # Alignment between preds and labels depends on both sides flattening
+        # row-major; if that invariant ever drifts (e.g. a preprocess hook
+        # reshapes labels), accuracy would silently go wrong rather than error.
+        assert predictions.shape == labels_flat.shape, (
+            f"sparse prediction/label shape mismatch: "
+            f"{predictions.shape} vs {labels_flat.shape}"
+        )
+        correct = (predictions == labels_flat).sum()
+        total = labels_flat.size
         return {"accuracy": float(correct) / max(int(total), 1)}
 
     # When eval is enabled we save at the same cadence so

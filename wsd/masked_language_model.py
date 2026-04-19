@@ -73,22 +73,7 @@ def load_model(model_name: str = _DEFAULT_MODEL) -> ModelComponents:
 
 def unmask_token(text: str) -> UnmaskResult:
     components = load_model()
-
-    inputs = components.tokenizer(text, return_tensors="pt").to(components.device)
-    mask_idx = (inputs.input_ids == components.tokenizer.mask_token_id).nonzero()
-
-    if len(mask_idx) == 0:
-        raise PromptMaskError()
-
-    with torch.no_grad():
-        outputs = components.model(**inputs)
-
-    logits = outputs.logits[0, mask_idx[0, 1]]
-    probs = torch.softmax(logits, dim=-1)
-    compact_id = int(torch.argmax(probs).item())
-
-    decoded_token = components.letter_set.letters[compact_id]
-    return UnmaskResult(token=decoded_token, probabilities=probs)
+    return _unmask_chunk([text], components)[0]
 
 
 # Sub-batch size used when length-bucketing inside ``unmask_token_batch``.
@@ -162,79 +147,82 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     return cast(list[UnmaskResult], results)
 
 
+def _prediction_positions(input_ids: torch.Tensor, mask_token_id: int) -> torch.Tensor:
+    """LongTensor ``(batch,)`` column index of the first ``[MASK]`` per row.
+
+    Returned as integer positions (not a boolean mask) so the model can gather
+    rows via indexed select. A bool ``masked_select`` would force the GPU to
+    report ``mask.sum()`` back to the host before sizing its output — a sync
+    that drains the stream and serializes the multi-chunk dispatch in
+    ``_unmask_chunks_cuda_parallel``. Rows with multiple masks use the first
+    (argmax returns the first max); rows with no mask raise.
+    """
+    is_mask = input_ids == mask_token_id
+    if bool((is_mask.sum(dim=1) == 0).any()):
+        raise PromptMaskError()
+    return is_mask.int().argmax(dim=1)
+
+
+def _logits_to_results(
+    logits: torch.Tensor, letters: tuple[str, ...],
+) -> list[UnmaskResult]:
+    """Turn ``(batch, answer_vocab)`` logits into per-example UnmaskResults."""
+    probs = torch.softmax(logits, dim=-1)
+    compact_ids = torch.argmax(probs, dim=-1).tolist()
+    return [
+        UnmaskResult(token=letters[cid], probabilities=p)
+        for cid, p in zip(compact_ids, probs, strict=True)
+    ]
+
+
 def _unmask_chunks_cuda_parallel(
     chunks: list[tuple[list[int], list[str]]],
     components: ModelComponents,
 ) -> list[list[UnmaskResult]]:
     """Dispatch each chunk's forward pass on its own CUDA stream.
 
-    Tokenization and mask-position lookup run on CPU before we enter the
-    stream context. Doing the lookup on-GPU would require a ``.item()``
-    sync that waits for the chunk's own stream to drain, which serialized
-    the per-chunk dispatch with the host and erased most of the stream
-    parallelism. On CPU the lookup is ~microseconds per chunk.
+    Tokenization and mask validation run on CPU before we enter the stream
+    context so the per-chunk dispatch can overlap — on-GPU validation would
+    force a ``.item()`` sync that drains the stream and erases the parallelism.
     """
     mask_id = components.tokenizer.mask_token_id
     streams = [torch.cuda.Stream() for _ in chunks]
-    pending: list[tuple[list[tuple[torch.Tensor, int]], torch.cuda.Stream]] = []
+    pending: list[tuple[torch.Tensor, torch.cuda.Stream]] = []
 
     for (_, chunk_texts), stream in zip(chunks, streams, strict=True):
         cpu_inputs = components.tokenizer(
             chunk_texts, return_tensors="pt", padding=True,
         )
-        mask_positions: list[tuple[int, int]] = []
-        for i in range(len(chunk_texts)):
-            positions = (cpu_inputs.input_ids[i] == mask_id).nonzero(as_tuple=True)[0]
-            if positions.numel() == 0:
-                raise PromptMaskError()
-            mask_positions.append((i, int(positions[0])))
+        positions_cpu = _prediction_positions(cpu_inputs.input_ids, mask_id)
 
         with torch.cuda.stream(stream), torch.no_grad():
             inputs = cpu_inputs.to(components.device, non_blocking=True)
-            outputs = components.model(**inputs)
-            logits_per_example = [
-                (outputs.logits[bi, si], bi) for bi, si in mask_positions
-            ]
-        pending.append((logits_per_example, stream))
+            positions = positions_cpu.to(components.device, non_blocking=True)
+            outputs = components.model(**inputs, prediction_positions=positions)
+        pending.append((outputs.logits, stream))
 
+    letters = components.letter_set.letters
     results: list[list[UnmaskResult]] = []
-    for logits_per_example, stream in pending:
+    for logits, stream in pending:
         stream.synchronize()
-        chunk_out: list[UnmaskResult] = []
-        for logits, _ in logits_per_example:
-            probs = torch.softmax(logits, dim=-1)
-            compact_id = int(torch.argmax(probs).item())
-            decoded = components.letter_set.letters[compact_id]
-            chunk_out.append(UnmaskResult(token=decoded, probabilities=probs))
-        results.append(chunk_out)
+        results.append(_logits_to_results(logits, letters))
     return results
 
 
 def _unmask_chunk(texts: list[str], components: ModelComponents) -> list[UnmaskResult]:
     """Single forward pass for a length-homogeneous chunk."""
-    # Tokenize all texts with padding
-    inputs = components.tokenizer(texts, return_tensors="pt", padding=True).to(components.device)
+    # Compute mask positions on the CPU tensor before moving to device so the
+    # validation sum/any doesn't force a device→host sync.
+    cpu_inputs = components.tokenizer(texts, return_tensors="pt", padding=True)
+    positions_cpu = _prediction_positions(
+        cpu_inputs.input_ids, components.tokenizer.mask_token_id,
+    )
 
-    # Find mask token positions for each example in the batch
-    mask_positions = []
-    for i in range(len(texts)):
-        mask_idx = (inputs.input_ids[i] == components.tokenizer.mask_token_id).nonzero()
-        if len(mask_idx) == 0:
-            raise PromptMaskError()
-        mask_positions.append((i, mask_idx[0, 0].item()))
-
-    # Run batched forward pass
+    inputs = cpu_inputs.to(components.device)
+    positions = positions_cpu.to(components.device)
     with torch.no_grad():
-        outputs = components.model(**inputs)
+        outputs = components.model(**inputs, prediction_positions=positions)
 
-    # Extract predictions for each mask token
-    results = []
-    for batch_idx, seq_idx in mask_positions:
-        logits = outputs.logits[batch_idx, seq_idx]
-        probs = torch.softmax(logits, dim=-1)
-        compact_id = int(torch.argmax(probs).item())
-        decoded_token = components.letter_set.letters[compact_id]
-        results.append(UnmaskResult(token=decoded_token, probabilities=probs))
-    return results
+    return _logits_to_results(outputs.logits, components.letter_set.letters)
 
 
