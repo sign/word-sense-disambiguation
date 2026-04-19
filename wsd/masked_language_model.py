@@ -49,10 +49,18 @@ def load_model(model_name: str = _DEFAULT_MODEL) -> ModelComponents:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     letter_set = build_letters(tokenizer)
 
+    # Prefer bf16 on GPUs that support it (Ampere+, most AMD MI200+) — it
+    # matches the dtype training uses, so inference doesn't incur a numeric
+    # mismatch versus the trained weights. Fall back to fp16 on older GPUs.
+    if device == "cuda":
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    else:
+        dtype = None
+
     model = WSDModernBertForMaskedLM.from_pretrained(
         model_name,
         device_map=device,
-        dtype=torch.float16 if device == "cuda" else None,
+        dtype=dtype,
     )
     # Stock checkpoints ship with a full-vocab decoder; prune it to the 128
     # answer letters so decoder outputs are indexed by compact ids. Checkpoints
