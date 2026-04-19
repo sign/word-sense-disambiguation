@@ -31,6 +31,7 @@ from wsd.model import WSDModernBertForMaskedLM
 from wsd.model_surgery import prune_decoder
 from wsd.prompt import (
     Definition,
+    SentenceAlreadyMarkedError,
     WordNotFoundError,
     create_multiple_choice_prompt,
     mark_word_in_sentence,
@@ -140,9 +141,10 @@ def create_examples_for_synset(
     for sentence in synset["examples"]:
         try:
             marked_sentence = mark_word_in_sentence(sentence, word)
-        except WordNotFoundError:
+        except (WordNotFoundError, SentenceAlreadyMarkedError):
             # Sentence doesn't contain the word with clean word boundaries
-            # (e.g. "100" inside "100th"); skip so training matches inference.
+            # (e.g. "100" inside "100th"), or the sentence already uses '*';
+            # skip so training matches inference.
             continue
 
         start_offset = random.randint(0, max_offset) if max_offset > 0 else 0
@@ -213,7 +215,7 @@ def create_none_of_above_example(
     for s, ex in candidate_sentences:
         try:
             marked_sentence = mark_word_in_sentence(ex, word)
-        except WordNotFoundError:
+        except (WordNotFoundError, SentenceAlreadyMarkedError):
             continue
         chosen_synset = s
         chosen_sentence = ex

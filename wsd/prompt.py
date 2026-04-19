@@ -16,6 +16,13 @@ class WordNotFoundError(ValueError):
         self.sentence = sentence
 
 
+class SentenceAlreadyMarkedError(ValueError):
+    """Raised when *sentence* already contains the ``*`` marker character."""
+    def __init__(self, sentence: str):
+        super().__init__(f"Sentence already contains marker character '*': {sentence!r}")
+        self.sentence = sentence
+
+
 def mark_word_in_sentence(sentence: str, word: str) -> str:
     """Mark the first word-boundary occurrence of *word* in *sentence* with asterisks.
 
@@ -26,12 +33,12 @@ def mark_word_in_sentence(sentence: str, word: str) -> str:
     training data generation and benchmark/inference paths; identical output
     here means identical prompts.
 
-    Raises ``WordNotFoundError`` if no word-boundary match is found, or if
-    *sentence* already contains an asterisk (which would be ambiguous with
-    our marker character).
+    Raises ``SentenceAlreadyMarkedError`` if the sentence already contains an
+    asterisk, or ``WordNotFoundError`` if no word-boundary match is found.
+    Both subclass ``ValueError`` so existing catch-all handlers keep working.
     """
     if "*" in sentence:
-        raise WordNotFoundError(word, sentence)
+        raise SentenceAlreadyMarkedError(sentence)
     pattern = r"\b" + re.escape(word) + r"\b"
     match = re.search(pattern, sentence, flags=re.IGNORECASE)
     if match is None:
