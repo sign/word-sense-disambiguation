@@ -85,9 +85,12 @@ def unmask_token(text: str) -> UnmaskResult:
 
 
 # Sub-batch size used when length-bucketing inside ``unmask_token_batch``.
-# Eight was the throughput sweet spot on GB10 — small enough that
-# padding-within-chunk stays cheap, large enough to keep the GPU fed.
-_BUCKET_CHUNK_SIZE = 8
+# Four wins on real WSD traffic on GB10: a disambiguated sentence has 6-20
+# content words whose prompt lengths span 2-4x (few-sense vs many-sense
+# words), so within-chunk padding waste dominates once the chunk grows
+# past ~4. Larger chunks look better only on artificially length-homogeneous
+# batches.
+_BUCKET_CHUNK_SIZE = 4
 
 
 def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:

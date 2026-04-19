@@ -138,13 +138,13 @@ def test_unmask_token_batch_preserves_order_with_varied_lengths():
     """Varied prompt lengths exercise the internal length-bucketing sort; the
     returned results must still be in input order, not sorted order.
 
-    Uses >_BUCKET_CHUNK_SIZE (8) interleaved prompts so the batch is split
+    Uses >> _BUCKET_CHUNK_SIZE interleaved prompts so the batch is split
     across multiple chunks and the tail-chunk/index-remapping path is hit.
     """
     components = load_model()
     mask = components.tokenizer.mask_token
     # Ten interleaved lengths so sorted-order != input-order *and* the batch
-    # spans at least two chunks of 8.
+    # spans multiple chunks after length-bucketing.
     repeats_by_prompt = [0, 80, 5, 60, 10, 40, 15, 20, 25, 70]
     texts = [
         _mc_prompt(mask, chr(ord("A") + i))
