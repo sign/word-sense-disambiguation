@@ -159,33 +159,32 @@ def _unmask_chunks_cuda_parallel(
     chunks: list[tuple[list[int], list[str]]],
     components: ModelComponents,
 ) -> list[list[UnmaskResult]]:
-    """Dispatch each chunk on its own CUDA stream, sync, and return results.
+    """Dispatch each chunk's forward pass on its own CUDA stream.
 
-    Splits the per-chunk work into a forward pass (enqueued on the chunk's
-    stream) and a host-side finalize step (softmax+argmax) that runs only
-    after the stream has synchronized. The argmax is tiny but launches a
-    kernel, so we keep it on the stream too; only the final ``.item()`` and
-    Python list construction wait for the GPU.
+    Tokenization and mask-position lookup run on CPU before we enter the
+    stream context. Doing the lookup on-GPU would require a ``.item()``
+    sync that waits for the chunk's own stream to drain, which serialized
+    the per-chunk dispatch with the host and erased most of the stream
+    parallelism. On CPU the lookup is ~microseconds per chunk.
     """
+    mask_id = components.tokenizer.mask_token_id
     streams = [torch.cuda.Stream() for _ in chunks]
     pending: list[tuple[list[tuple[torch.Tensor, int]], torch.cuda.Stream]] = []
 
     for (_, chunk_texts), stream in zip(chunks, streams, strict=True):
+        cpu_inputs = components.tokenizer(
+            chunk_texts, return_tensors="pt", padding=True,
+        )
+        mask_positions: list[tuple[int, int]] = []
+        for i in range(len(chunk_texts)):
+            positions = (cpu_inputs.input_ids[i] == mask_id).nonzero(as_tuple=True)[0]
+            if positions.numel() == 0:
+                raise PromptMaskError()
+            mask_positions.append((i, int(positions[0])))
+
         with torch.cuda.stream(stream), torch.no_grad():
-            inputs = components.tokenizer(
-                chunk_texts, return_tensors="pt", padding=True,
-            ).to(components.device)
-
-            mask_positions = []
-            for i in range(len(chunk_texts)):
-                mask_idx = (inputs.input_ids[i] == components.tokenizer.mask_token_id).nonzero()
-                if len(mask_idx) == 0:
-                    raise PromptMaskError()
-                mask_positions.append((i, mask_idx[0, 0].item()))
-
+            inputs = cpu_inputs.to(components.device, non_blocking=True)
             outputs = components.model(**inputs)
-            # Keep only the logits we need per example (tiny slice), still on
-            # the chunk's stream.
             logits_per_example = [
                 (outputs.logits[bi, si], bi) for bi, si in mask_positions
             ]
