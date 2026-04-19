@@ -105,31 +105,21 @@ def create_examples_for_synset(
     synset_id = synset["id"]
     synset_pos = synset["pos"]
 
-    # Collect definitions only from synsets with the same POS tag
-    pos_definitions = []
-    synset_to_definition = {}
-
-    for other_synset in all_synsets:
-        if other_synset["pos"] != synset_pos:
-            continue
-
-        other_synset_id = other_synset["id"]
-
-        # Randomly pick either source or alternative definition
-        chosen_def = random.choice([
-            other_synset["source_definition"],
-            other_synset["alternative_definition"]
-        ])
-
-        def_idx = len(pos_definitions)
-        pos_definitions.append(Definition(synset_id=other_synset_id, definition=chosen_def))
-        synset_to_definition[other_synset_id] = def_idx
-
-    # Shuffle definitions for variety
-    indices = list(range(len(pos_definitions)))
-    random.shuffle(indices)
-    shuffled_definitions = [pos_definitions[i] for i in indices]
-    index_mapping = {old_idx: new_idx for new_idx, old_idx in enumerate(indices)}
+    # Build one Definition per same-POS synset, picking a source or alternative
+    # definition uniformly; then shuffle in place and locate the correct slot
+    # by synset_id. Locating after the shuffle drops the parallel
+    # synset_to_definition / index_mapping dicts the old version carried.
+    shuffled_definitions = [
+        Definition(
+            synset_id=s["id"],
+            definition=random.choice([s["source_definition"], s["alternative_definition"]]),
+        )
+        for s in all_synsets if s["pos"] == synset_pos
+    ]
+    random.shuffle(shuffled_definitions)
+    correct_shuffled_idx = next(
+        i for i, d in enumerate(shuffled_definitions) if d.synset_id == synset_id
+    )
 
     # Create one example for each sentence
     letters = build_letters(tokenizer).letters
@@ -148,10 +138,6 @@ def create_examples_for_synset(
             continue
 
         start_offset = random.randint(0, max_offset) if max_offset > 0 else 0
-
-        # Find correct answer after shuffling
-        correct_original_idx = synset_to_definition[synset_id]
-        correct_shuffled_idx = index_mapping[correct_original_idx]
         correct_letter = letters[start_offset + correct_shuffled_idx]
 
         prompt = create_multiple_choice_prompt(
