@@ -70,6 +70,10 @@ if __name__ == "__main__":
     # Process examples in batches
     num_batches = (len(examples) + batch_size - 1) // batch_size
 
+    # Pre-initialize so the final print doesn't NameError on an empty corpus
+    # (where num_batches == 0 and the loop body never runs).
+    accuracy = 0.0
+
     with tqdm(total=len(examples), desc="Evaluating examples") as pbar:
         for batch_idx in range(num_batches):
             start_idx = batch_idx * batch_size
@@ -87,14 +91,14 @@ if __name__ == "__main__":
                     marked_sentence=example.marked_text,
                     definitions=definitions
                 )
-                for example, definitions in zip(batch, all_definitions, strict=False)
+                for example, definitions in zip(batch, all_definitions, strict=True)
             ]
 
             # Process entire batch at once
             predictions = disambiguate_word_batch(batch_data)
 
             # Check predictions and update accuracy
-            for i, (example, result) in enumerate(zip(batch, predictions, strict=False)):
+            for i, (example, result) in enumerate(zip(batch, predictions, strict=True)):
                 is_correct = result.synset_id == example.synset_id
                 if is_correct:
                     correct += 1
