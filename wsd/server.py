@@ -28,16 +28,26 @@ logging.basicConfig(
 templates = Jinja2Templates(directory=os.path.dirname(__file__))
 
 
-async def http_exception_handler(request: Request, exc: Exception):
-    status_code = exc.status_code if hasattr(exc, 'status_code') else 500
+async def http_exception_handler(request: Request, exc: HTTPException):
     body = {
         "error": {
-            "status": status_code,
-            "message": exc.detail if hasattr(exc, 'detail') else str(exc),
-            "type": type(exc).__name__
-        }
+            "status": exc.status_code,
+            "message": exc.detail,
+            "type": type(exc).__name__,
+        },
     }
-    return JSONResponse(body, status_code=status_code)
+    return JSONResponse(body, status_code=exc.status_code)
+
+
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    body = {
+        "error": {
+            "status": 500,
+            "message": str(exc),
+            "type": type(exc).__name__,
+        },
+    }
+    return JSONResponse(body, status_code=500)
 
 
 async def disambiguate_request(request: Request):
@@ -100,5 +110,5 @@ middlewares = [
 app = Starlette(debug=True, routes=routes, middleware=middlewares,
                 exception_handlers={
                     HTTPException: http_exception_handler,
-                    Exception: http_exception_handler,
+                    Exception: unhandled_exception_handler,
                 })
