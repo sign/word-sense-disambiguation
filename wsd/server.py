@@ -1,5 +1,6 @@
 import logging
 import os
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 from starlette.applications import Starlette
@@ -25,17 +26,6 @@ logging.basicConfig(
 )
 
 templates = Jinja2Templates(directory=os.path.dirname(__file__))
-
-
-def _dataclasses_to_dict(obj):
-    if hasattr(obj, '__dataclass_fields__'):
-        return {field.name: _dataclasses_to_dict(getattr(obj, field.name))
-                for field in obj.__dataclass_fields__.values()}
-    elif isinstance(obj, list):
-        return [_dataclasses_to_dict(item) for item in obj]
-    elif isinstance(obj, dict):
-        return {key: _dataclasses_to_dict(value) for key, value in obj.items()}
-    return obj
 
 
 async def http_exception_handler(request: Request, exc: Exception):
@@ -68,7 +58,7 @@ async def disambiguate_request(request: Request):
             "wordnet_url": WORDNET_URL,
         })
     else:
-        return JSONResponse(_dataclasses_to_dict(result))
+        return JSONResponse(asdict(result))
 
 
 async def index_request(request: Request):
