@@ -84,6 +84,18 @@ class TrainingExample:
     prompt: str
 
 
+def _random_start_offset(n_definitions: int) -> int:
+    """Random letter offset that keeps the options block clear of the NOTA slot.
+
+    Training spreads the correct answer across the whole letter range so the
+    model doesn't learn "correct answer clusters near A". The offset window
+    must leave room for all definitions before NOTA's fixed slot at
+    :data:`wsd.letters.NOTA_LETTER_INDEX`.
+    """
+    max_offset = NOTA_LETTER_INDEX - n_definitions
+    return random.randint(0, max_offset) if max_offset > 0 else 0
+
+
 def create_examples_for_synset(
     synset: dict,
     word: str,
@@ -124,11 +136,6 @@ def create_examples_for_synset(
 
     # Create one example for each sentence
     letters = build_letters(tokenizer).letters
-    # Pick a random offset per sentence so the model sees correct answers
-    # spread across the whole letter range, not clustered near A. NOTA's slot
-    # at letters[NOTA_LETTER_INDEX] is fixed, so the options block must end
-    # before it.
-    max_offset = NOTA_LETTER_INDEX - len(shuffled_definitions)
     for sentence in synset["examples"]:
         try:
             marked_sentence = mark_word_in_sentence(sentence, word)
@@ -138,7 +145,7 @@ def create_examples_for_synset(
             # skip so training matches inference.
             continue
 
-        start_offset = random.randint(0, max_offset) if max_offset > 0 else 0
+        start_offset = _random_start_offset(len(shuffled_definitions))
         correct_letter = letters[start_offset + correct_shuffled_idx]
 
         prompt = create_multiple_choice_prompt(
@@ -227,11 +234,7 @@ def create_none_of_above_example(
     # The correct answer is "none of the above" — always the fixed NOTA letter.
     none_letter = build_letters(tokenizer).letters[NOTA_LETTER_INDEX]
 
-    # Random offset so NOTA examples also see the option block at varied
-    # positions — otherwise the model would learn "NOTA appears when options
-    # start at A" which is also a positional shortcut.
-    max_offset = NOTA_LETTER_INDEX - len(frequent_pos_definitions)
-    start_offset = random.randint(0, max_offset) if max_offset > 0 else 0
+    start_offset = _random_start_offset(len(frequent_pos_definitions))
 
     prompt = create_multiple_choice_prompt(
         word=word,
