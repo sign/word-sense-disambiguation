@@ -22,12 +22,6 @@ logger = logging.getLogger(__name__)
 NO_DEFINITIONS_FOUND = "No definitions found"
 
 
-class APIResponseError(ValueError):
-    """Raised when API response doesn't match expected format"""
-    def __init__(self, received: int, expected: int):
-        super().__init__(f"API response has {received} items but expected {expected} queries")
-
-
 @dataclass
 class WordQuery:
     """Query for word definitions"""
@@ -97,12 +91,6 @@ def get_spacy_pipeline(language: str = "en"):
     raise ValueError(msg)
 
 
-def _validate_response_length(results: list, queries: list[WordQuery]) -> None:
-    """Validate that API response has correct number of items"""
-    if len(results) < len(queries):
-        raise APIResponseError(received=len(results), expected=len(queries))
-
-
 def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
     """
     Internal function to fetch definitions for multiple words using the batch endpoint.
@@ -126,32 +114,37 @@ def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list
 
     try:
         response = requests.post(url, json=payload, timeout=30)
-
-        if response.status_code != 200:
-            logger.warning("WordNet API returned status code %s", response.status_code)
-            return [[] for _ in queries]
-
-        data = response.json()
-
-        # Parse response and maintain order. Definitions are kept in the order
-        # returned by the API — typically WordNet's frequency order — so the
-        # more common senses land on earlier letter slots.
-        results = []
-        for item in data.get("data", []):
-            definitions = [
-                Definition(synset_id=synset_id, definition=definition_text)
-                for synset_id, definition_text in item.get("definitions", {}).items()
-            ]
-            results.append(definitions)
-
-        # Validate response has correct number of items
-        _validate_response_length(results, queries)
-
-    except (requests.RequestException, APIResponseError) as e:
+    except requests.RequestException as e:
         logger.warning("WordNet batch request to %s failed: %s", url, e)
         return [[] for _ in queries]
-    else:
-        return results
+
+    if response.status_code != 200:
+        logger.warning("WordNet API returned status code %s", response.status_code)
+        return [[] for _ in queries]
+
+    try:
+        data = response.json()
+    except requests.RequestException as e:
+        logger.warning("WordNet API returned non-JSON body: %s", e)
+        return [[] for _ in queries]
+
+    # Parse response and maintain order. Definitions are kept in the order
+    # returned by the API — typically WordNet's frequency order — so the
+    # more common senses land on earlier letter slots.
+    results = [
+        [
+            Definition(synset_id=synset_id, definition=definition_text)
+            for synset_id, definition_text in item.get("definitions", {}).items()
+        ]
+        for item in data.get("data", [])
+    ]
+
+    if len(results) < len(queries):
+        logger.warning(
+            "WordNet API returned %d items, expected %d", len(results), len(queries),
+        )
+        return [[] for _ in queries]
+    return results
 
 
 def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
