@@ -347,15 +347,11 @@ def _update_tokens_with_results(
 ) -> None:
     """Update tokens with disambiguation results"""
     for token_idx, result in zip(valid_indices, predictions, strict=True):
-        # Handle "none of the above" case
-        if result.definition == NONE_OF_THE_ABOVE:
-            tokens[token_idx].synset_id = None
-            tokens[token_idx].synset_definition = None
-            tokens[token_idx].confidence = result.confidence
-        else:
+        tokens[token_idx].confidence = result.confidence
+        # NOTA → leave synset_id/synset_definition at their dataclass defaults (None).
+        if result.definition != NONE_OF_THE_ABOVE:
             tokens[token_idx].synset_id = result.synset_id
             tokens[token_idx].synset_definition = result.definition
-            tokens[token_idx].confidence = result.confidence
 
 
 def _extract_entities(doc) -> list[Entity]:
