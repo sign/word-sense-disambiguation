@@ -85,8 +85,9 @@ def create_multiple_choice_prompt(word: str,
 
     ``definitions[i]`` is rendered with letter ``start_offset + i``; the
     default ``start_offset=0`` keeps the historical "A, B, C, ..." layout.
-    Non-zero offsets are used by the bias probe to test whether the model
-    depends on the specific A-first mapping it saw during training.
+    Training randomizes ``start_offset`` per example so the correct answer is
+    spread across the whole letter range instead of clustering near A;
+    inference always passes 0.
 
     The last letter (index :data:`wsd.letters.NOTA_LETTER_INDEX`) is always
     reserved for the "none of the above" option. The offset window must not
