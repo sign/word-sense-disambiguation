@@ -26,6 +26,7 @@ from transformers import (
 
 from training.wn_data import WordNetExample
 from training.wn_data import split as split_wn_examples
+from wsd.benchmark import fetch_synset_definitions, load_wn_english
 from wsd.letters import NOTA_LETTER_INDEX, LetterSet, build_letters
 from wsd.model import WSDModernBertForMaskedLM
 from wsd.model_surgery import prune_decoder
@@ -280,29 +281,13 @@ def build_eval_examples_from_wn(
     (can happen when the wn lexicon disagrees with the example's own synset
     metadata), and any where we'd exceed the letter budget.
     """
-    import wn as _wn
-
-    try:
-        en = _wn.Wordnet(lexicon="omw-en:1.4")
-    except _wn.Error:
-        _wn.download("omw-en:1.4")
-        en = _wn.Wordnet(lexicon="omw-en:1.4")
-
-    pos_a_and_s = {"a", "s"}
+    en = load_wn_english()
     letters = build_letters(tokenizer).letters
     max_definitions = len(letters) - 1  # last letter reserved for "none of the above"
 
     out: list[TrainingExample] = []
     for ex in wn_examples:
-        pos_options = pos_a_and_s if ex.pos == "a" else {ex.pos}
-        defs: dict[str, str] = {}
-        for word in en.words(form=ex.lemma):
-            for synset in word.synsets():
-                if synset.pos not in pos_options:
-                    continue
-                text = synset.definition()
-                if text:
-                    defs[synset.id] = text
+        defs = fetch_synset_definitions(en, ex.lemma, ex.pos)
         if ex.synset_id not in defs:
             continue
         if len(defs) > max_definitions:
