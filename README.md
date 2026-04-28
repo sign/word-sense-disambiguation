@@ -12,6 +12,14 @@ The application requires the following environment variable:
 
 - `WORDNET_URL`: URL of the WordNet API server (default: `http://127.0.0.1:8000`)
 
+### WordNet API server
+
+Start the WordNet API server (used by both local and Docker setups):
+
+```shell
+docker run -p 8000:8000 ghcr.io/sign/wn
+```
+
 ### Running locally
 
 ```shell
@@ -23,7 +31,7 @@ uvicorn --reload wsd.server:app --port 8080
 
 ```shell
 docker build --platform="linux/amd64" -t wsd .
-docker run -p 8005:8080 -e PORT=8080 -e WORDNET_URL=http://127.0.0.1:8000 wsd
+docker run -p 8005:8080 -e PORT=8080 -e WORDNET_URL=http://host.docker.internal:8000 wsd
 ```
 
 ## Usage
