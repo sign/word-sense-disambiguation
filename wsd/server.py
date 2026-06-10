@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 
@@ -107,7 +108,18 @@ middlewares = [
     )
 ]
 
+@asynccontextmanager
+async def lifespan(app: Starlette):
+    """Run the full pipeline once before serving traffic, so model loading and
+    GPU kernel compilation (~6s for spaCy's first call) happen at startup
+    instead of on the first request."""
+    logging.getLogger(__name__).info("Warming up the pipeline...")
+    disambiguate("bank")
+    yield
+
+
 app = Starlette(debug=True, routes=routes, middleware=middlewares,
+                lifespan=lifespan,
                 exception_handlers={
                     HTTPException: http_exception_handler,
                     Exception: unhandled_exception_handler,
