@@ -82,6 +82,10 @@ def get_spacy_pipeline(language: str = "en"):
         # Add more language models as needed
     }
     if language in model_map:
+        # Run the pipeline on GPU when one is available (requires cupy);
+        # falls back to CPU otherwise.
+        gpu_activated = spacy.prefer_gpu()
+        logger.info("spaCy GPU activated: %s", gpu_activated)
         nlp = spacy.load(model_map[language])
         nlp.add_pipe("entityLinker", last=True)
         return nlp
