@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -15,7 +16,12 @@ from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
 from wsd.env import WORDNET_URL
-from wsd.word_sense_disambiguation import disambiguate
+from wsd.word_sense_disambiguation import (
+    activate_spacy_pipeline,
+    build_gpu_spacy_pipeline,
+    disambiguate,
+    warm_cpu_spacy_pipeline,
+)
 
 # Honor LOG_LEVEL from the environment so the Dockerfile (or a local operator)
 # can dial in verbosity without touching code. Defaulting to INFO means our
@@ -108,14 +114,26 @@ middlewares = [
     )
 ]
 
+async def _swap_spacy_to_gpu():
+    gpu_nlp = await asyncio.to_thread(build_gpu_spacy_pipeline)
+    if gpu_nlp is not None:
+        # Runs in the event loop thread, between requests, so the backend flip
+        # and the pipeline swap are atomic with respect to request handling.
+        activate_spacy_pipeline("en", gpu_nlp)
+
+
 @asynccontextmanager
 async def lifespan(app: Starlette):
-    """Run the full pipeline once before serving traffic, so model loading and
-    GPU kernel compilation (~6s for spaCy's first call) happen at startup
-    instead of on the first request."""
+    """Warm up before serving traffic: load a CPU spaCy pipeline and the WSD
+    model so requests can be answered immediately, while the GPU spaCy
+    pipeline compiles its kernels in a worker thread and swaps in once warm
+    (~10s after start)."""
     logging.getLogger(__name__).info("Warming up the pipeline...")
+    warm_cpu_spacy_pipeline()
     disambiguate("bank")
+    gpu_swap = asyncio.create_task(_swap_spacy_to_gpu())
     yield
+    gpu_swap.cancel()
 
 
 app = Starlette(debug=True, routes=routes, middleware=middlewares,
