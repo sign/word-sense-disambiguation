@@ -6,7 +6,8 @@ from wsd.masked_language_model import load_model
 # Make sure it does not interact with the wordnet
 os.environ["WORDNET_URL"] = "NONE"
 
-from wsd.word_sense_disambiguation import disambiguate_word, get_spacy_pipeline
+from wsd.spacy_utils import get_spacy_pipeline
+from wsd.word_sense_disambiguation import disambiguate_word
 
 # Download spaCy entities knowledge base (600MB~)
 print("Priming spaCy model...")

@@ -1,9 +1,7 @@
 # Stage 1: install dependencies and download models.
 FROM python:3.12-slim AS builder
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
+ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/opt/hf-cache
 
 RUN python -m venv /opt/venv
@@ -32,6 +30,8 @@ assert tm == cm, f'CUDA major mismatch: torch {torch.version.cuda} vs {cupy}'"
 # venv layer, which the spaCy entity-linker KB is written into) stay identical
 # across code-only changes and registries/Cloud Run can reuse them.
 RUN python -c "import spacy; nlp = spacy.load('en_core_web_trf'); nlp.add_pipe('entityLinker'); nlp('Apple is a technology company.')"
+# The model name mirrors _DEFAULT_MODEL in wsd/masked_language_model.py; it is
+# repeated here so the download can run before the code copy (keep in sync).
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('sign/ModernBERT-Large-Instruct-WSD')"
 
 # Copy application code
@@ -45,17 +45,24 @@ RUN python -m wsd.prime
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
-    LOG_LEVEL=DEBUG \
+    LOG_LEVEL=INFO \
     HF_HOME=/opt/hf-cache \
     PATH="/opt/venv/bin:$PATH"
 
+# Run as a non-root user; --create-home gives runtime caches (e.g. cupy's
+# kernel cache in ~/.cupy) a writable location.
+RUN useradd --create-home --uid 1000 app
+
 # Largest and most stable layers first, so code-only rebuilds reuse them.
-COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /opt/hf-cache /opt/hf-cache
+COPY --from=builder --chown=app:app /opt/venv /opt/venv
+COPY --from=builder --chown=app:app /opt/hf-cache /opt/hf-cache
 
 WORKDIR /app
-COPY wsd/ ./wsd/
+COPY --chown=app:app wsd/ ./wsd/
+
+USER app
 
 # Command to run the application. exec makes uvicorn PID 1 so it receives
 # SIGTERM and can shut down gracefully (Cloud Run sends SIGTERM, then SIGKILL).
+# $PORT is provided by the runtime; Cloud Run sets it automatically.
 CMD ["sh", "-c", "exec python -m uvicorn wsd.server:app --host 0.0.0.0 --port $PORT"]
