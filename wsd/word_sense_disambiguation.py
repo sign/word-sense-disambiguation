@@ -1,9 +1,7 @@
 import logging
 from dataclasses import dataclass
-from functools import cache
 
 import requests
-import spacy
 
 from wsd.env import WORDNET_URL
 from wsd.letters import NOTA_LETTER_INDEX
@@ -14,6 +12,7 @@ from wsd.prompt import (
     create_marked_sentence,
     create_multiple_choice_prompt,
 )
+from wsd.spacy_utils import run_spacy_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -72,22 +71,6 @@ class DisambiguationInput:
 class WordSenseDisambiguation:
     tokens: list[DisambiguatedToken]
     entities: list[Entity]
-
-
-@cache
-def get_spacy_pipeline(language: str = "en"):
-    """Get or load and cache spaCy model for given language"""
-    model_map = {
-        'en': 'en_core_web_trf',
-        # Add more language models as needed
-    }
-    if language in model_map:
-        nlp = spacy.load(model_map[language])
-        nlp.add_pipe("entityLinker", last=True)
-        return nlp
-
-    msg = f"Language '{language}' not supported"
-    raise ValueError(msg)
 
 
 def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
@@ -373,8 +356,7 @@ def _extract_entities(doc) -> list[Entity]:
 
 
 def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
-    nlp = get_spacy_pipeline(language)
-    doc = nlp(text)
+    doc = run_spacy_pipeline(text, language)
 
     # First pass: Create all base tokens and identify content words to disambiguate
     tokens, content_word_indices = _create_base_tokens(doc)

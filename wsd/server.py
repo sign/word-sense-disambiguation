@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 
@@ -14,6 +16,7 @@ from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
 from wsd.env import WORDNET_URL
+from wsd.spacy_utils import swap_spacy_to_gpu, warm_cpu_spacy_pipeline
 from wsd.word_sense_disambiguation import disambiguate
 
 # Honor LOG_LEVEL from the environment so the Dockerfile (or a local operator)
@@ -107,7 +110,28 @@ middlewares = [
     )
 ]
 
+@asynccontextmanager
+async def lifespan(app: Starlette):
+    """Warm up before serving traffic: load a CPU spaCy pipeline and the WSD
+    model so requests can be answered immediately, while the GPU spaCy
+    pipeline compiles its kernels in a worker thread and swaps in once warm
+    (~10s after start).
+
+    Set WSD_WARMUP=0 to skip (e.g. tests that need the server up instantly);
+    models then load lazily on the first request, as before."""
+    gpu_swap = None
+    if os.environ.get("WSD_WARMUP", "1") != "0":
+        logging.getLogger(__name__).info("Warming up the pipeline...")
+        warm_cpu_spacy_pipeline()
+        disambiguate("bank")
+        gpu_swap = asyncio.create_task(swap_spacy_to_gpu())
+    yield
+    if gpu_swap is not None:
+        gpu_swap.cancel()
+
+
 app = Starlette(debug=True, routes=routes, middleware=middlewares,
+                lifespan=lifespan,
                 exception_handlers={
                     HTTPException: http_exception_handler,
                     Exception: unhandled_exception_handler,

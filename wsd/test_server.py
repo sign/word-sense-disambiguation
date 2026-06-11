@@ -1,3 +1,4 @@
+import os
 import socket
 import subprocess
 import time
@@ -37,12 +38,14 @@ class ServerProcess:
         self.process = None
 
     def start(self):
+        # WSD_WARMUP=0 skips the startup warmup so the server is listening
+        # immediately; models load lazily on the first request instead.
         self.process = subprocess.Popen([
             "uvicorn", "wsd.server:app",
             "--host", self.host,
             "--port", str(self.port),
             "--log-level", "warning"
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "WSD_WARMUP": "0"})
 
         if not wait_for_port(self.host, self.port, timeout=10):
             stdout, stderr = self.process.communicate(timeout=2)
