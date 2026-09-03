@@ -45,6 +45,9 @@ tar -I "xz -9e" -cvf generated.tar.xz generated/
 
 - `--wn-train`: adds WordNet's own example sentences, except the held-out eval slice (`--eval-wn-count`,
   default 5000 examples, same split as `python -m wsd.benchmark --split eval`).
+- `--semcor PREFIX --sense-index dict/index.sense`: adds a sense-annotated corpus in Raganato et al. (2017)
+  XML format, e.g. SemCor (222k instances) from http://lcl.uniroma1.it/wsdeval/ ; sense keys are mapped to
+  `omw-en` ids through WordNet 3.0's `index.sense`.
 
 Adjective (`a`) and satellite-adjective (`s`) senses are one option set, as at inference. Weights are kept in
 fp32 with bf16 autocast (pure-bf16 weights round away most updates at lr 3e-5). Flash attention 2 is used

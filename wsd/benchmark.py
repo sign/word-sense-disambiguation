@@ -63,6 +63,7 @@ class WordNetExample:
     pos: str
     marked_text: str  # sentence with *word* markers
     sentence: str  # original, unmarked example
+    gold_ids: tuple[str, ...] = ()  # other acceptable synsets (SemEval instances may list several gold keys)
 
 
 def collect_wordnet_examples():
@@ -110,7 +111,7 @@ def evaluate(examples: list[WordNetExample], batch_size: int = 64, failures_path
         ]
         predictions = disambiguate_word_batch(batch_data)
         for ex, defs, result in zip(batch, all_definitions, predictions, strict=True):
-            if result.synset_id == ex.synset_id:
+            if result.synset_id == ex.synset_id or result.synset_id in ex.gold_ids:
                 correct += 1
             elif fails:
                 gold = next((d.definition for d in defs if d.synset_id == ex.synset_id), None)
@@ -133,9 +134,17 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--failures", type=str, help="write mispredictions to this JSONL file")
     parser.add_argument("--limit", type=int, help="only evaluate this many examples")
+    parser.add_argument("--raganato", type=str,
+                        help="evaluate a Raganato-format set instead of WordNet examples (prefix of .data.xml)")
+    parser.add_argument("--sense-index", type=str, help="WordNet 3.0 index.sense (required with --raganato)")
     args, _ = parser.parse_known_args()  # tolerate the launcher's --nodes
 
-    if args.split == "all":
+    if args.raganato:
+        from training.semcor import load_raganato, load_sense_index
+
+        examples = load_raganato(Path(args.raganato), load_sense_index(Path(args.sense_index)))
+        args.split = Path(args.raganato).name
+    elif args.split == "all":
         examples = list(collect_wordnet_examples())
     else:
         from training.wn_data import split
