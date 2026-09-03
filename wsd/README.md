@@ -116,6 +116,7 @@ never trained on). Trained on 8xH100 via `training/sweep.py`; configs in `traini
 | + WordNet sentences + SemCor (space-tokenized), 2 epochs (S5)          | 78.1%       | 68.0%       |
 | + WordNet sentences + SemCor (detokenized), 2 epochs (R5)              | 77.8%       | 80.4%       |
 | **+ WordNet Gloss Corpus, manual tags, 2 epochs (W4)**                 | **78.6%**   | **80.7%**   |
+| same with the compact prompt template, lr 2e-5 (C3; +20% throughput)  | 78.3%       | 80.6%       |
 | + WordNet Gloss Corpus, definitions only (W3) / all tags (W1)          | 78.1%       | 80.9% / 80.4% |
 | same, 3 epochs (R1)                                                    | 77.8%       | 79.7%       |
 | same, 4 epochs, lr 2e-5 (R4)                                           | 77.8%       | 78.9%       |
@@ -166,8 +167,11 @@ gains nothing (GIL), a separate process does; the BPE tokenizer's default 224 ra
 (185 CPU-s for a 0.9 s call), 16 threads are 4x faster. Remaining levers: flash-attention in the serve image
 (needs a CUDA toolkit to build; at 1.6% padding and 10% attention time it has little to gain), static-shape
 compilation with widths bucketed to 64 (3.1k vs 3.6k prompts/s), CUDA graphs (compile did not finish in 45 min),
-chunk 512 (2.96k). Remaining levers: a compact prompt template (-16% tokens, `--prompt-style compact`, needs the
-model retrained with it), ModernBERT-base (~2.5x cheaper, -3 points).
+chunk 512 (2.96k). The compact prompt template (`--prompt-style compact`, 16% fewer tokens) was then trained (C3 = W4 recipe, lr 2e-5):
+78.3% held-out / 80.6% ALL, i.e. within noise of W4, at 4,326 vs 3,614 prompts/s (+20%). It is published as Hub
+revision `compact` of `sign/ModernBERT-Large-Instruct-WSD`; `load_model` reads `prompt_style` from the checkpoint
+config, so switching is `WSD_MODEL` plus a client that has this code. Remaining lever: ModernBERT-base (~2.5x
+cheaper, -3 points).
 
 ## More Examples
 
