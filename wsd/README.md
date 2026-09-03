@@ -101,6 +101,39 @@ Under `torchrun` the examples are sharded across GPUs. With flash attention on N
 
 *machine under other load, time is not reliable
 
+### Accuracy on real text (2026-09)
+
+WordNet's example sentences are short phrases; the corpus we actually process is running text. The two
+disagree, so we also report the standard SemEval "ALL" set (Senseval-2/3, SemEval-07/13/15; 7,247 instances,
+any gold key accepted, natural punctuation). Held-out slice = `--split eval` (5,000 WordNet examples, seed 42,
+never trained on). Trained on 8xH100 via `training/sweep.py`; configs in `training/sweeps/`.
+
+| Model                                                                  | WN held-out | SemEval ALL |
+|------------------------------------------------------------------------|------------:|------------:|
+| `sign/ModernBERT-Large-Instruct-WSD` (published, 2026-04)              | 70.0%       | 59.2%       |
+| generated data only, fixed recipe, 1 epoch                             | 75.4%       | 53.4%       |
+| generated data only, 3 epochs                                          | 75-76%      | 40-45%      |
+| + WordNet sentences + SemCor (space-tokenized), 2 epochs (S5)          | 78.1%       | 68.0%       |
+| + WordNet sentences + SemCor (detokenized), 2 epochs (R5)              | 77.8%       | 80.4%       |
+| **+ WordNet Gloss Corpus, manual tags, 2 epochs (W4)**                 | **78.6%**   | **80.7%**   |
+| + WordNet Gloss Corpus, definitions only (W3) / all tags (W1)          | 78.1%       | 80.9% / 80.4% |
+| same, 3 epochs (R1)                                                    | 77.8%       | 79.7%       |
+| same, 4 epochs, lr 2e-5 (R4)                                           | 77.8%       | 78.9%       |
+| same, without cross-POS "none of the above" examples (R2)              | 77.3%       | 79.3%       |
+| SemCor+OMSTI (1.1M instances) instead of SemCor, 1 epoch (R3)          | 77.6%       | 79.1%       |
+| ModernBERT-base, same data, 3 epochs (R7; ~2.5x cheaper per prompt)    | 73.5%       | 77.9%       |
+
+Recipe for W4: `--wn-train --semcor SemCor/semcor --wngt glosstag --wngt-tags man --sense-index dict/index.sense
+--lr-scheduler cosine --label-smoothing 0.1 --weight-decay 0.01 --learning-rate 3e-5 --num-epochs 2 --batch-size 64`.
+The gloss corpus adds ~0.5 points on both benchmarks; its variants (definitions only, all tags, lr 2e-5/4e-5)
+are within noise of each other; 3 epochs (77.6% / 80.3%) and 1 epoch (77.5% / 79.9%) are both worse than 2.
+
+What we learned: more epochs on the synthetic data alone overfit its style and destroy real-text accuracy;
+SemCor (222k gold-annotated sentences) fixes that, and it must be detokenized to match natural text (S5 vs R5).
+The published model's largest failure class on real text was over-predicting "none of the above" (34% of its
+misses); the SemCor-trained models almost never do (0.2%), so `WSD_NOTA_THRESHOLD` is no longer needed for them. Remaining errors are
+mostly fine-grained sense splits ("shake, as from cold" vs "tremble, as from fear").
+
 ## Throughput
 
 Offline batch pipeline (`python -m wsd.batch`), 100k Wikipedia sentences (~10.7 model prompts per sentence),

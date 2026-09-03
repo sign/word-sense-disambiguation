@@ -75,6 +75,9 @@ class TrainingConfig:
     wn_train: bool = False  # also train on the non-held-out WordNet examples
     semcor: Path | None = None  # Raganato-format corpus prefix to add to training (e.g. .../SemCor/semcor)
     nota_examples: bool = True  # include the one cross-POS "none of the above" example per word
+    wngt: Path | None = None  # WordNet gloss corpus `glosstag` dir to add to training
+    wngt_parts: str = "def,ex"  # which gloss parts to use
+    wngt_tags: str = "man,auto"  # which tag qualities to use
     sense_index: Path | None = None  # WordNet 3.0 index.sense, needed with --semcor
     weight_decay: float = DEFAULT_WEIGHT_DECAY
     label_smoothing: float = DEFAULT_LABEL_SMOOTHING
@@ -339,6 +342,18 @@ def build_examples(
         )
         print(f"Adding {len(semcor_examples)} examples from {config.semcor}")
         training_examples.extend(semcor_examples)
+    if config.wngt:
+        from training.semcor import load_sense_index
+        from training.wngt import load_wngt
+
+        held_out = frozenset(ex.synset_id for ex in wn_eval) if config.eval_wn_count > 0 else frozenset()
+        wngt_examples = build_examples_from_wn(
+            load_wngt(config.wngt, load_sense_index(config.sense_index), parts=frozenset(config.wngt_parts.split(",")),
+                      tags=frozenset(config.wngt_tags.split(",")), exclude_synsets=held_out),
+            tokenizer, augment=True,
+        )
+        print(f"Adding {len(wngt_examples)} gloss-corpus examples from {config.wngt}")
+        training_examples.extend(wngt_examples)
 
     random.shuffle(training_examples)
     print(f"Shuffled {len(training_examples)} training examples")
@@ -470,7 +485,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Drop the cross-POS 'none of the above' training examples")
     parser.add_argument("--semcor", type=Path,
                         help="Also train on this Raganato-format corpus (prefix of .data.xml/.gold.key.txt)")
-    parser.add_argument("--sense-index", type=Path, help="WordNet 3.0 index.sense (required with --semcor)")
+    parser.add_argument("--sense-index", type=Path, help="WordNet 3.0 index.sense (required with --semcor/--wngt)")
+    parser.add_argument("--wngt", type=Path, help="Also train on the WordNet gloss corpus (glosstag directory)")
+    parser.add_argument("--wngt-parts", type=str, default=TrainingConfig.wngt_parts, help="def,ex subset to use")
+    parser.add_argument("--wngt-tags", type=str, default=TrainingConfig.wngt_tags, help="man,auto subset to use")
     parser.add_argument("--weight-decay", type=float, default=DEFAULT_WEIGHT_DECAY, help="AdamW weight decay")
     parser.add_argument("--label-smoothing", type=float, default=DEFAULT_LABEL_SMOOTHING,
                         help="Label smoothing applied in the model loss")
@@ -498,6 +516,9 @@ def main(argv: list[str] | None = None):
         wn_train=args.wn_train,
         semcor=args.semcor,
         nota_examples=not args.no_nota_examples,
+        wngt=args.wngt,
+        wngt_parts=args.wngt_parts,
+        wngt_tags=args.wngt_tags,
         sense_index=args.sense_index,
         weight_decay=args.weight_decay,
         label_smoothing=args.label_smoothing,
