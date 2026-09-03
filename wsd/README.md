@@ -145,15 +145,29 @@ one process per GPU, steady state per H100 80GB. spaCy `en_core_web_trf` runs on
 | + local `wn.db` copy, tokenize once, CPU probabilities          | 55                  |                                                  |
 | + `WSD_COMPILE=1` (torch.compile, default in `wsd.batch`)       | 75                  | one-time ~60s compile per process                |
 | definitions via the WordNet API instead of the local file       | 60                  | ~0.35 ms of server work per query                |
-| + memoized API lookups, 16 tokenizer threads, spaCy in its own process | **125** | output identical; entity linking on    |
-| `--skip-single-sense`                                           | ~140 (est.)         | 1-sense words assigned directly (20% of prompts) |
+| + memoized API lookups, 16 tokenizer threads, spaCy in its own process | 125          | output identical; entity linking on    |
+| + tokenize/pad the next slice while the GPU runs (vectorized pad), CUDA MPS, 2 persistent spaCy workers per GPU | **160-195** | output identical |
+| `--skip-single-sense`                                           | ~+20% (est.)        | 1-sense words assigned directly (20% of prompts) |
 
-A billion sentences at ~1,000 sentences/s per 8-GPU node is roughly 12 node-days. What did not work:
+A billion sentences at ~1,400 sentences/s per 8-GPU node is roughly 8 node-days.
+
+Where the forward pass stands (one H100, 32.6k real prompts, `torch.profiler` + `nvidia-smi dmon`): the model with
+pre-padded inputs runs at 4,100 prompts/s at 99% SM utilization, so the kernels (GEMM ~55%, compile-fused
+elementwise ~25%, cuDNN SDPA attention ~10%; padding waste 1.6%) are near the practical ceiling for these shapes.
+End to end the same call ran at 2,700 prompts/s at 63% utilization; the gap was host work: HF `tokenizer.pad`
+in Python per chunk, and tokenization done before any GPU work. `unmask_token_batch` now tokenizes and pads one
+8,192-prompt slice while the previous slice's kernels run and pads with numpy: 3,700 prompts/s at 96%. A spaCy
+process on the same GPU costs the model 16%; CUDA MPS (`wsd.batch` starts it) cuts that to 8%, and two
+persistent spaCy workers per GPU keep spaCy from pacing the pipeline.
+
+What did not work:
 fp8 dynamic quantization (torchao) is +16% speed for a collapse to 67% on SemEval; a spaCy prefetch *thread*
 gains nothing (GIL), a separate process does; the BPE tokenizer's default 224 rayon threads contend on a lock
 (185 CPU-s for a 0.9 s call), 16 threads are 4x faster. Remaining levers: flash-attention in the serve image
-(needs a CUDA toolkit to build), a shorter prompt template (needs retraining), ModernBERT-base (~2.5x cheaper,
--3 points).
+(needs a CUDA toolkit to build; at 1.6% padding and 10% attention time it has little to gain), static-shape
+compilation with widths bucketed to 64 (3.1k vs 3.6k prompts/s), CUDA graphs (compile did not finish in 45 min),
+chunk 512 (2.96k). Remaining levers: a compact prompt template (-16% tokens, `--prompt-style compact`, needs the
+model retrained with it), ModernBERT-base (~2.5x cheaper, -3 points).
 
 ## More Examples
 

@@ -3,9 +3,11 @@ from dataclasses import dataclass
 from functools import cache
 from typing import cast
 
+import numpy as np
 import torch
 from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
+from wsd import prompt
 from wsd.letters import LetterSet, build_letters
 from wsd.model import WSDModernBertForMaskedLM
 from wsd.model_surgery import prune_decoder
@@ -88,11 +90,19 @@ def load_model(model_name: str | None = None) -> ModelComponents:
     if model.decoder.out_features != len(letter_set.letters):
         letter_set = prune_decoder(model, tokenizer)
     model.eval()
+    prompt.PROMPT_STYLE = getattr(model.config, "prompt_style", "full")
     # torch.compile of the encoder: ~1.5x on H100 batch inference, at the cost
     # of ~50s compile per process (needs a C compiler for triton). Off by
     # default for the latency-sensitive server; wsd.batch turns it on.
     if os.environ.get("WSD_COMPILE") == "1" and device == "cuda":
-        model.model = torch.compile(model.model, dynamic=True)
+        # WSD_COMPILE_DYNAMIC=0 with WSD_PAD_MULTIPLE=64 gives a small set of static
+        # shapes (one graph each, cached by inductor across processes);
+        # WSD_COMPILE_MODE=reduce-overhead then adds CUDA graphs.
+        model.model = torch.compile(
+            model.model,
+            dynamic=os.environ.get("WSD_COMPILE_DYNAMIC", "1") == "1",
+            mode=os.environ.get("WSD_COMPILE_MODE", "default"),
+        )
     return ModelComponents(model=model, tokenizer=tokenizer, device=device, letter_set=letter_set)
 
 
@@ -109,21 +119,26 @@ def unmask_token(text: str) -> UnmaskResult:
 _BUCKET_CHUNK_SIZE = int(os.environ.get("WSD_CHUNK_SIZE", 512 if attn_implementation() else 4))
 
 
+# Prompts tokenized and padded together. Kernel launches are asynchronous, so
+# while the GPU works through one slice's chunks the CPU tokenizes and pads the
+# next: measured on H100, host work otherwise leaves the GPU idle ~1/3 of the time.
+_SLICE_SIZE = int(os.environ.get("WSD_SLICE_SIZE", 8192))
+_NUM_STREAMS = 4
+# Pad chunk widths up to a multiple of this (1 = exact). Bucketing widths keeps
+# the number of distinct shapes small for static-shape compilation.
+_PAD_MULTIPLE = int(os.environ.get("WSD_PAD_MULTIPLE", 1))
+
+
 def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     """
     Batch version of unmask_token that processes multiple texts in parallel.
 
-    Inputs are tokenized once (the fast tokenizer parallelizes a list), sorted
-    by length and processed in fixed-size chunks, so each forward pass only pads
-    up to the longest prompt *in its chunk* rather than the longest in the whole
-    batch. Results are un-sorted before return, so callers still see outputs in
-    input order.
-
-    Args:
-        texts: List of strings, each containing a mask token
-
-    Returns:
-        List of UnmaskResult objects for each input text
+    Texts are handled in slices of ``_SLICE_SIZE``: each slice is tokenized once
+    (the fast tokenizer parallelizes a list), sorted by length and padded into
+    fixed-size chunks so each forward pass only pads up to the longest prompt in
+    its chunk. On CUDA every chunk is launched asynchronously as soon as it is
+    ready and results are collected at the end, so tokenizing the next slice
+    overlaps the GPU work of the previous one. Results are returned in input order.
 
     Raises:
         PromptMaskError: If any text doesn't contain a mask token
@@ -133,34 +148,33 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
 
     components = load_model()
     tokenizer = components.tokenizer
-
-    encodings = tokenizer(texts)["input_ids"]
-    if any(tokenizer.mask_token_id not in ids for ids in encodings):
-        raise PromptMaskError()
-    order = sorted(range(len(texts)), key=lambda i: len(encodings[i]))
-
-    # Build the chunk list up front so we can dispatch in one loop: each chunk
-    # is (original indices, padded tensors, mask positions).
-    chunks: list[tuple[list[int], dict[str, torch.Tensor], torch.Tensor]] = []
-    for start in range(0, len(order), _BUCKET_CHUNK_SIZE):
-        chunk_idx = order[start : start + _BUCKET_CHUNK_SIZE]
-        padded = tokenizer.pad({"input_ids": [encodings[i] for i in chunk_idx]}, return_tensors="pt")
-        positions = _prediction_positions(padded["input_ids"], tokenizer.mask_token_id)
-        chunks.append((chunk_idx, dict(padded), positions))
-
-    # On CUDA, launch each chunk on its own stream so the GPU can overlap
-    # kernel execution across chunks instead of us serializing on the host.
-    # Measured ~13% speedup on 20-content-word sentences vs sequential
-    # chunks. Other devices (CPU/MPS) see no benefit from streams and fall
-    # back to straight sequential dispatch.
-    if components.device == "cuda" and len(chunks) > 1:
-        chunk_results = _unmask_chunks_cuda_parallel(chunks, components)
-    else:
-        chunk_results = [_unmask_chunk(inputs, positions, components) for _, inputs, positions in chunks]
+    cuda = components.device == "cuda"
+    streams = [torch.cuda.Stream() for _ in range(_NUM_STREAMS)] if cuda else []
 
     results: list[UnmaskResult | None] = [None] * len(texts)
-    for (chunk_idx, _, _), chunk_res in zip(chunks, chunk_results, strict=True):
-        for orig_idx, res in zip(chunk_idx, chunk_res, strict=True):
+    pending: list[tuple[list[int], torch.Tensor, torch.cuda.Stream]] = []
+    for slice_start in range(0, len(texts), _SLICE_SIZE):
+        encodings = tokenizer(texts[slice_start:slice_start + _SLICE_SIZE])["input_ids"]
+        if any(tokenizer.mask_token_id not in ids for ids in encodings):
+            raise PromptMaskError()
+        order = sorted(range(len(encodings)), key=lambda i: len(encodings[i]))
+        for start in range(0, len(order), _BUCKET_CHUNK_SIZE):
+            local_idx = order[start : start + _BUCKET_CHUNK_SIZE]
+            chunk_idx = [slice_start + i for i in local_idx]
+            input_ids, attention_mask = _pad([encodings[i] for i in local_idx], tokenizer.pad_token_id)
+            positions = _prediction_positions(input_ids, tokenizer.mask_token_id)
+            inputs = {"input_ids": input_ids, "attention_mask": attention_mask}
+            if cuda:
+                stream = streams[len(pending) % _NUM_STREAMS]
+                pending.append((chunk_idx, _launch_chunk(inputs, positions, components, stream), stream))
+            else:
+                for orig_idx, res in zip(chunk_idx, _unmask_chunk(inputs, positions, components), strict=True):
+                    results[orig_idx] = res
+
+    letters = components.letter_set.letters
+    for chunk_idx, logits, stream in pending:
+        stream.synchronize()
+        for orig_idx, res in zip(chunk_idx, _logits_to_results(logits, letters), strict=True):
             results[orig_idx] = res
 
     # Every slot must be populated — callers (e.g. disambiguate_word_batch)
@@ -168,6 +182,20 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     # IndexError downstream rather than a clear failure here.
     assert all(r is not None for r in results), "unmask_token_batch left slots unfilled"
     return cast(list[UnmaskResult], results)
+
+
+def _pad(sequences: list[list[int]], pad_id: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Right-pad token id lists into ``(input_ids, attention_mask)`` LongTensors.
+
+    Vectorized: ``tokenizer.pad`` loops in Python and cost about as much as the
+    tokenization itself on 256-row chunks.
+    """
+    lengths = np.fromiter((len(s) for s in sequences), dtype=np.int64, count=len(sequences))
+    width = -(-int(lengths.max()) // _PAD_MULTIPLE) * _PAD_MULTIPLE
+    mask = np.arange(width)[None, :] < lengths[:, None]
+    input_ids = np.full((len(sequences), width), pad_id, dtype=np.int64)
+    input_ids[mask] = np.concatenate([np.asarray(s, dtype=np.int64) for s in sequences])
+    return torch.from_numpy(input_ids), torch.from_numpy(mask.astype(np.int64))
 
 
 def _prediction_positions(input_ids: torch.Tensor, mask_token_id: int) -> torch.Tensor:
@@ -202,32 +230,19 @@ def _logits_to_results(
     ]
 
 
-def _unmask_chunks_cuda_parallel(
-    chunks: list[tuple[list[int], dict[str, torch.Tensor], torch.Tensor]],
-    components: ModelComponents,
-) -> list[list[UnmaskResult]]:
-    """Dispatch each chunk's forward pass on its own CUDA stream.
+def _launch_chunk(
+    cpu_inputs: dict[str, torch.Tensor], positions_cpu: torch.Tensor, components: ModelComponents,
+    stream: torch.cuda.Stream,
+) -> torch.Tensor:
+    """Queue one chunk's forward pass on ``stream`` and return its (not yet computed) logits.
 
-    Tokenization and mask validation already happened on the CPU, so the
-    per-chunk dispatch can overlap — on-GPU validation would force a
-    ``.item()`` sync that drains the stream and erases the parallelism.
+    Mask validation already happened on the CPU, so nothing here forces a
+    device sync; the caller synchronizes the stream when it collects results.
     """
-    streams = [torch.cuda.Stream() for _ in chunks]
-    pending: list[tuple[torch.Tensor, torch.cuda.Stream]] = []
-
-    for (_, cpu_inputs, positions_cpu), stream in zip(chunks, streams, strict=True):
-        with torch.cuda.stream(stream), torch.no_grad():
-            inputs = {k: v.to(components.device, non_blocking=True) for k, v in cpu_inputs.items()}
-            positions = positions_cpu.to(components.device, non_blocking=True)
-            outputs = components.model(**inputs, prediction_positions=positions)
-        pending.append((outputs.logits, stream))
-
-    letters = components.letter_set.letters
-    results: list[list[UnmaskResult]] = []
-    for logits, stream in pending:
-        stream.synchronize()
-        results.append(_logits_to_results(logits, letters))
-    return results
+    with torch.cuda.stream(stream), torch.no_grad():
+        inputs = {k: v.pin_memory().to(components.device, non_blocking=True) for k, v in cpu_inputs.items()}
+        positions = positions_cpu.pin_memory().to(components.device, non_blocking=True)
+        return components.model(**inputs, prediction_positions=positions).logits
 
 
 def _unmask_chunk(
