@@ -1,0 +1,10 @@
+{
+  "A-1ep-fix":          ["--num-epochs", "1", "--learning-rate", "3e-5", "--batch-size", "64", "--eval-steps", "1000"],
+  "B-3ep":              ["--num-epochs", "3", "--learning-rate", "3e-5", "--batch-size", "64", "--eval-steps", "1000"],
+  "C-3ep-lr5e-5":       ["--num-epochs", "3", "--learning-rate", "5e-5", "--batch-size", "64", "--eval-steps", "1000"],
+  "D-3ep-lr2e-5-bs32":  ["--num-epochs", "3", "--learning-rate", "2e-5", "--batch-size", "32", "--eval-steps", "2000"],
+  "E-3ep-wn":           ["--num-epochs", "3", "--learning-rate", "3e-5", "--batch-size", "64", "--eval-steps", "1000", "--wn-train"],
+  "F-3ep-wn-lr5e-5":    ["--num-epochs", "3", "--learning-rate", "5e-5", "--batch-size", "64", "--eval-steps", "1000", "--wn-train"],
+  "G-3ep-wn-cos-wd-ls": ["--num-epochs", "3", "--learning-rate", "3e-5", "--batch-size", "64", "--eval-steps", "1000", "--wn-train", "--lr-scheduler", "cosine", "--weight-decay", "0.01", "--label-smoothing", "0.1"],
+  "H-base-3ep-wn":      ["--model", "answerdotai/ModernBERT-base", "--num-epochs", "3", "--learning-rate", "8e-5", "--batch-size", "64", "--eval-steps", "1000", "--wn-train"]
+}

@@ -50,6 +50,20 @@ Adjective (`a`) and satellite-adjective (`s`) senses are one option set, as at i
 fp32 with bf16 autocast (pure-bf16 weights round away most updates at lr 3e-5). Flash attention 2 is used
 when installed.
 
+## Sweeps on a Slurm node
+
+`training/sweep.py` trains one config per GPU (no DDP) and benchmarks each result on the held-out slice:
+
+```shell
+uv run --no-project --with nemo_run run_distributed.py --nodes 1 --nodelist cnode002 \
+  --script training.sweep --image /mnt/nfs-1/amit/wsd/wsd-train.sqsh --image_name wsd-train --detach \
+  --configs training/sweeps/2026-09-03-recipe.json
+```
+
+Results land in `/mnt/nfs-1/amit/wsd/runs/<config>/{train.log,result.json,final/}`. The image is built with
+`training/Enrootfile.sh` from the NeMo base image and bundles the WordNet API, which each process starts for
+itself when `WORDNET_URL` is unset.
+
 ## Training Process
 
 The training script (`train.py`):
