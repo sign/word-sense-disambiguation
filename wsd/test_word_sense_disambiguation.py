@@ -20,6 +20,13 @@ from wsd.word_sense_disambiguation import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_definitions_cache():
+    from wsd import word_sense_disambiguation
+
+    word_sense_disambiguation._definitions_cache.clear()
+
+
 def test_word_query_dataclass():
     """Test WordQuery dataclass creation"""
     query = WordQuery(form="bank", pos="n")

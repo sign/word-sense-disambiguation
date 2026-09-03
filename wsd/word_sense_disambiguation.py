@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 # Constants
 NO_DEFINITIONS_FOUND = "No definitions found"
 _MAX_QUERIES_PER_REQUEST = 1000
+# (form, pos, language) -> definitions, filled from API responses. A corpus has a
+# bounded vocabulary, so after warm-up almost every lookup is a hit; each API
+# round trip otherwise costs ~0.35 ms per query of server-side work.
+# ponytail: unbounded (a few hundred k entries at most); add an LRU if memory matters.
+_definitions_cache: dict[tuple[str, str, str], list[Definition]] = {}
 # Minimum (renormalized) probability for "none of the above" to win. 0 keeps
 # plain argmax; >1 disables NOTA. The model over-predicts NOTA on long natural
 # sentences (trained on short WordNet-style examples), so batch users may want
@@ -79,19 +84,58 @@ class WordSenseDisambiguation:
     entities: list[Entity]
 
 
+@dataclass(frozen=True)
+class LightToken:
+    """The spaCy ``Token`` attributes this module reads, as a plain picklable record."""
+    text: str
+    lemma_: str
+    pos_: str
+    i: int
+    idx: int
+    is_punct: bool
+    is_space: bool
+    whitespace_: str
+
+
+@dataclass
+class LightDoc:
+    """Picklable stand-in for a parsed spaCy ``Doc`` (tokens + linked entities), so
+    spaCy can run in another process and hand results to :func:`disambiguate_docs`."""
+    tokens: list[LightToken]
+    entities: list[Entity]
+
+    def __iter__(self):
+        return iter(self.tokens)
+
+
+def light_doc(doc) -> LightDoc:
+    return LightDoc(
+        tokens=[
+            LightToken(t.text, t.lemma_, t.pos_, t.i, t.idx, t.is_punct, t.is_space, t.whitespace_) for t in doc
+        ],
+        entities=_extract_entities(doc),
+    )
+
+
 def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
     """Fetch definitions for exact (form, pos) queries from the WordNet API batch
-    endpoint, one list per query, in input order."""
+    endpoint, one list per query, in input order. Results are memoized per
+    (form, pos), and only distinct misses are sent to the server."""
     if not queries:
         return []
 
-    # Training builds hundreds of thousands of queries at once; keep requests bounded.
-    if len(queries) > _MAX_QUERIES_PER_REQUEST:
-        return [
-            d
-            for start in range(0, len(queries), _MAX_QUERIES_PER_REQUEST)
-            for d in _get_definitions_raw(queries[start:start + _MAX_QUERIES_PER_REQUEST], language)
-        ]
+    keys = [(q.form, q.pos, language) for q in queries]
+    misses = list(dict.fromkeys(k for k in keys if k not in _definitions_cache))
+    for start in range(0, len(misses), _MAX_QUERIES_PER_REQUEST):  # training sends hundreds of thousands at once
+        chunk = misses[start:start + _MAX_QUERIES_PER_REQUEST]
+        fetched = _fetch_definitions([WordQuery(form=f, pos=p) for f, p, _ in chunk], language)
+        if fetched is not None:  # a failed request is not cached, so it is retried next time
+            _definitions_cache.update(zip(chunk, fetched, strict=True))
+    return [list(_definitions_cache.get(k, [])) for k in keys]
+
+
+def _fetch_definitions(queries: list[WordQuery], language: str) -> list[list[Definition]] | None:
+    """One batch request to the WordNet API; ``None`` on failure."""
 
     url = f"{WORDNET_URL}/lexicons/omw-{language}:1.4/definitions"
     payload = {
@@ -102,17 +146,17 @@ def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list
         response = requests.post(url, json=payload, timeout=30)
     except requests.RequestException as e:
         logger.warning("WordNet batch request to %s failed: %s", url, e)
-        return [[] for _ in queries]
+        return None
 
     if response.status_code != 200:
         logger.warning("WordNet API returned status code %s", response.status_code)
-        return [[] for _ in queries]
+        return None
 
     try:
         data = response.json()
     except requests.RequestException as e:
         logger.warning("WordNet API returned non-JSON body: %s", e)
-        return [[] for _ in queries]
+        return None
 
     # Parse response and maintain order. Definitions are kept in the order
     # returned by the API — WordNet's sense (frequency) order — so the
@@ -129,8 +173,8 @@ def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list
         logger.warning(
             "WordNet API returned %d items, expected %d", len(results), len(queries),
         )
-        return [[] for _ in queries]
-    return results
+        return None
+    return results[:len(queries)]
 
 
 def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
@@ -344,7 +388,9 @@ def _update_tokens_with_results(
 
 
 def _extract_entities(doc) -> list[Entity]:
-    """Extract linked entities from spaCy doc (empty when the entityLinker pipe is disabled)."""
+    """Extract linked entities from a spaCy doc (empty when the entityLinker pipe is disabled)."""
+    if isinstance(doc, LightDoc):
+        return doc.entities
     entities = []
     for ent in getattr(doc._, "linkedEntities", None) or []:
         span = ent.get_span()
