@@ -80,6 +80,7 @@ top-level README), then:
 python -m wsd.benchmark                       # all 27.8k examples
 python -m wsd.benchmark --split eval          # the 5k-example slice held out during training
 python -m wsd.benchmark --failures fails.jsonl  # dump mispredictions for analysis
+python -m wsd.benchmark --raganato .../Evaluation_Datasets/ALL/ALL --sense-index .../dict/index.sense  # SemEval "ALL"
 ```
 
 Under `torchrun` the examples are sharded across GPUs. With flash attention on NVIDIA DGX Spark, set

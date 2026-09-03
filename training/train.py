@@ -73,7 +73,9 @@ class TrainingConfig:
     eval_wn_count: int = 5000  # held-out wn examples used as eval set
     eval_wn_seed: int = 42  # seed controlling wn eval/benchmark split
     wn_train: bool = False  # also train on the non-held-out WordNet examples
+    semcor: Path | None = None  # Raganato-format corpus prefix to add to training (e.g. .../SemCor/semcor)
     nota_examples: bool = True  # include the one cross-POS "none of the above" example per word
+    sense_index: Path | None = None  # WordNet 3.0 index.sense, needed with --semcor
     weight_decay: float = DEFAULT_WEIGHT_DECAY
     label_smoothing: float = DEFAULT_LABEL_SMOOTHING
     lr_scheduler: str = DEFAULT_LR_SCHEDULER
@@ -329,6 +331,14 @@ def build_examples(
             print(f"Adding {len(wn_train_examples)} non-held-out wn examples to training")
             training_examples.extend(wn_train_examples)
 
+    if config.semcor:
+        from training.semcor import load_raganato, load_sense_index
+
+        semcor_examples = build_examples_from_wn(
+            load_raganato(config.semcor, load_sense_index(config.sense_index)), tokenizer, augment=True,
+        )
+        print(f"Adding {len(semcor_examples)} examples from {config.semcor}")
+        training_examples.extend(semcor_examples)
 
     random.shuffle(training_examples)
     print(f"Shuffled {len(training_examples)} training examples")
@@ -458,6 +468,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Also train on the WordNet example sentences that are not held out for eval")
     parser.add_argument("--no-nota-examples", action="store_true",
                         help="Drop the cross-POS 'none of the above' training examples")
+    parser.add_argument("--semcor", type=Path,
+                        help="Also train on this Raganato-format corpus (prefix of .data.xml/.gold.key.txt)")
+    parser.add_argument("--sense-index", type=Path, help="WordNet 3.0 index.sense (required with --semcor)")
     parser.add_argument("--weight-decay", type=float, default=DEFAULT_WEIGHT_DECAY, help="AdamW weight decay")
     parser.add_argument("--label-smoothing", type=float, default=DEFAULT_LABEL_SMOOTHING,
                         help="Label smoothing applied in the model loss")
@@ -483,7 +496,9 @@ def main(argv: list[str] | None = None):
         eval_steps=args.eval_steps,
         eval_wn_count=args.eval_wn_count,
         wn_train=args.wn_train,
+        semcor=args.semcor,
         nota_examples=not args.no_nota_examples,
+        sense_index=args.sense_index,
         weight_decay=args.weight_decay,
         label_smoothing=args.label_smoothing,
         lr_scheduler=args.lr_scheduler,

@@ -24,6 +24,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--configs", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, default=Path("/mnt/nfs-1/amit/wsd/runs"))
+    parser.add_argument("--eval-raganato", type=Path, help="also benchmark on this Raganato-format set")
+    parser.add_argument("--sense-index", type=Path, help="WordNet 3.0 index.sense (with --eval-raganato)")
     parser.add_argument("--nodes", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -55,6 +57,12 @@ def main():
     correct, total, seconds = evaluate(eval_examples, batch_size=64, failures_path=str(out_dir / "failures.jsonl"))
     result = {"name": name, "args": configs[name], "accuracy": correct / total, "n": total,
               "seconds": seconds, "model": str(final)}
+    if args.eval_raganato:
+        from training.semcor import load_raganato, load_sense_index
+
+        exs = load_raganato(args.eval_raganato, load_sense_index(args.sense_index))
+        c, t, _ = evaluate(exs, batch_size=64, failures_path=str(out_dir / f"failures-{args.eval_raganato.name}.jsonl"))
+        result[f"accuracy_{args.eval_raganato.name}"] = c / t
     (out_dir / "result.json").write_text(json.dumps(result, indent=2))
     print(f"RESULT {json.dumps(result)}")
 
