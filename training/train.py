@@ -6,8 +6,11 @@ by treating it as a multiple-choice classification task using masked language mo
 """
 
 import argparse
+import io
 import json
+import os
 import random
+import tarfile
 import warnings
 from collections import Counter
 from dataclasses import dataclass
@@ -26,8 +29,8 @@ from transformers import (
 
 from training.wn_data import WordNetExample
 from training.wn_data import split as split_wn_examples
-from wsd.benchmark import fetch_synset_definitions, load_wn_english
 from wsd.letters import NOTA_LETTER_INDEX, LetterSet, build_letters
+from wsd.masked_language_model import attn_implementation
 from wsd.model import WSDModernBertForMaskedLM
 from wsd.model_surgery import prune_decoder
 from wsd.prompt import (
@@ -37,6 +40,7 @@ from wsd.prompt import (
     create_multiple_choice_prompt,
     mark_word_in_sentence,
 )
+from wsd.word_sense_disambiguation import WordQuery, get_definitions
 
 # Constants
 DEFAULT_MODEL = "answerdotai/ModernBERT-Large-Instruct"
@@ -55,7 +59,7 @@ NONE_SUFFIX = "_none"
 class TrainingConfig:
     """Configuration for training."""
     model_name: str = DEFAULT_MODEL
-    data_dir: Path = Path(__file__).parent / "data" / "generated"
+    data_dir: Path = Path(__file__).parent / "data" / "generated.tar.xz"
     output_dir: Path = Path(__file__).parent / "output"
     max_length: int = DEFAULT_MAX_LENGTH
     num_epochs: int = 1
@@ -66,8 +70,10 @@ class TrainingConfig:
     report_to: str = "wandb"
     max_steps: int = -1  # -1 means no limit (train full epochs)
     eval_steps: int = 500  # run eval every N steps
-    eval_wn_count: int = 1000  # held-out wn examples used as eval set
+    eval_wn_count: int = 5000  # held-out wn examples used as eval set
     eval_wn_seed: int = 42  # seed controlling wn eval/benchmark split
+    wn_train: bool = False  # also train on the non-held-out WordNet examples
+    nota_examples: bool = True  # include the one cross-POS "none of the above" example per word
     weight_decay: float = DEFAULT_WEIGHT_DECAY
     label_smoothing: float = DEFAULT_LABEL_SMOOTHING
     lr_scheduler: str = DEFAULT_LR_SCHEDULER
@@ -84,6 +90,13 @@ class TrainingExample:
     prompt: str
 
 
+def _pos_group(pos: str) -> str:
+    """Adjectives ("a") and satellite adjectives ("s") form one option set at
+    inference (``get_definitions`` fetches both for any adjective), so training
+    must present them together too."""
+    return "a" if pos == "s" else pos
+
+
 def _random_start_offset(n_definitions: int) -> int:
     """Random letter offset that keeps the options block clear of the NOTA slot.
 
@@ -96,46 +109,66 @@ def _random_start_offset(n_definitions: int) -> int:
     return random.randint(0, max_offset) if max_offset > 0 else 0
 
 
+def _augmented_example(
+    word: str,
+    sentence: str,
+    marked_sentence: str,
+    definitions: list[Definition],
+    correct_synset_id: str | None,
+    tokenizer: PreTrainedTokenizer,
+) -> TrainingExample:
+    """Build one training example with shuffled options and a random letter offset.
+
+    ``correct_synset_id=None`` means the answer is "none of the above".
+    """
+    definitions = list(definitions)
+    random.shuffle(definitions)
+    letters = build_letters(tokenizer).letters
+    start_offset = _random_start_offset(len(definitions))
+    if correct_synset_id is None:
+        correct_letter = letters[NOTA_LETTER_INDEX]
+    else:
+        correct_idx = next(i for i, d in enumerate(definitions) if d.synset_id == correct_synset_id)
+        correct_letter = letters[start_offset + correct_idx]
+    prompt = create_multiple_choice_prompt(
+        word=word,
+        mask_token=tokenizer.mask_token,
+        marked_sentence=marked_sentence,
+        definitions=definitions,
+        tokenizer=tokenizer,
+        start_offset=start_offset,
+    )
+    return TrainingExample(
+        word=word,
+        sentence=sentence,
+        marked_sentence=marked_sentence,
+        correct_synset_id=correct_synset_id if correct_synset_id is not None else "",
+        correct_answer_letter=correct_letter,
+        prompt=prompt,
+    )
+
+
 def create_examples_for_synset(
     synset: dict,
     word: str,
     all_synsets: list[dict],
     tokenizer: PreTrainedTokenizer,
 ) -> list[TrainingExample]:
-    """
-    Create training examples for a single synset.
-
-    Args:
-        synset: The synset to create examples for
-        word: The word form
-        all_synsets: All synsets for this word
-        tokenizer: The tokenizer to use
-
-    Returns:
-        List of training examples for this synset
-    """
+    """Create training examples for a single synset: one per example sentence,
+    with the same-POS-group synsets as options (one definition each, picking
+    source or alternative uniformly)."""
     examples = []
     synset_id = synset["id"]
-    synset_pos = synset["pos"]
+    group = _pos_group(synset["pos"])
 
-    # Build one Definition per same-POS synset, picking a source or alternative
-    # definition uniformly; then shuffle in place and locate the correct slot
-    # by synset_id. Locating after the shuffle drops the parallel
-    # synset_to_definition / index_mapping dicts the old version carried.
-    shuffled_definitions = [
+    definitions = [
         Definition(
             synset_id=s["id"],
             definition=random.choice([s["source_definition"], s["alternative_definition"]]),
         )
-        for s in all_synsets if s["pos"] == synset_pos
+        for s in all_synsets if _pos_group(s["pos"]) == group
     ]
-    random.shuffle(shuffled_definitions)
-    correct_shuffled_idx = next(
-        i for i, d in enumerate(shuffled_definitions) if d.synset_id == synset_id
-    )
 
-    # Create one example for each sentence
-    letters = build_letters(tokenizer).letters
     for sentence in synset["examples"]:
         try:
             marked_sentence = mark_word_in_sentence(sentence, word)
@@ -144,27 +177,7 @@ def create_examples_for_synset(
             # (e.g. "100" inside "100th"), or the sentence already uses '*';
             # skip so training matches inference.
             continue
-
-        start_offset = _random_start_offset(len(shuffled_definitions))
-        correct_letter = letters[start_offset + correct_shuffled_idx]
-
-        prompt = create_multiple_choice_prompt(
-            word=word,
-            mask_token=tokenizer.mask_token,
-            marked_sentence=marked_sentence,
-            definitions=shuffled_definitions,
-            tokenizer=tokenizer,
-            start_offset=start_offset,
-        )
-
-        examples.append(TrainingExample(
-            word=word,
-            sentence=sentence,
-            marked_sentence=marked_sentence,
-            correct_synset_id=synset_id,
-            correct_answer_letter=correct_letter,
-            prompt=prompt
-        ))
+        examples.append(_augmented_example(word, sentence, marked_sentence, definitions, synset_id, tokenizer))
 
     return examples
 
@@ -172,122 +185,61 @@ def create_examples_for_synset(
 def create_none_of_above_example(
     word: str,
     all_synsets: list[dict],
-    most_frequent_pos: str,
+    most_frequent_group: str,
     tokenizer: PreTrainedTokenizer,
 ) -> TrainingExample | None:
-    """
-    Create a "none of the above" training example.
-
-    This creates an example where the sentence uses a word in one POS,
-    but the definitions shown are from a different POS.
-
-    Args:
-        word: The word form
-        all_synsets: All synsets for this word
-        most_frequent_pos: The most frequent POS tag
-        tokenizer: The tokenizer to use
-
-    Returns:
-        A "none of the above" training example, or None if not possible
-    """
-    # Find synsets with different POS tags
-    other_pos_synsets = [s for s in all_synsets if s["pos"] != most_frequent_pos]
-
-    if not other_pos_synsets:
-        return None
-
-    # Pick a random synset+sentence from a different POS where the word appears
-    # with clean word boundaries. If no valid sentence exists across any of the
-    # other-POS synsets, we cannot build a faithful "none of the above" example.
-    candidate_sentences = [
-        (s, ex) for s in other_pos_synsets for ex in s["examples"]
-    ]
+    """Create a "none of the above" example: a sentence using the word in one
+    POS group, with the definitions shown from a different (the most frequent)
+    POS group. Returns None if no other-POS sentence can be marked."""
+    other_pos_synsets = [s for s in all_synsets if _pos_group(s["pos"]) != most_frequent_group]
+    candidate_sentences = [(s, ex) for s in other_pos_synsets for ex in s["examples"]]
     random.shuffle(candidate_sentences)
-    chosen_synset = None
-    chosen_sentence = None
-    marked_sentence = None
-    for s, ex in candidate_sentences:
+    for s, sentence in candidate_sentences:
         try:
-            marked_sentence = mark_word_in_sentence(ex, word)
+            marked_sentence = mark_word_in_sentence(sentence, word)
         except (WordNotFoundError, SentenceAlreadyMarkedError):
             continue
-        chosen_synset = s
-        chosen_sentence = ex
-        break
-    if marked_sentence is None:
-        return None
-
-    # Collect definitions only from the most frequent POS tag
-    frequent_pos_definitions = []
-    for synset in all_synsets:
-        if synset["pos"] == most_frequent_pos:
-            chosen_def = random.choice([
-                synset["source_definition"],
-                synset["alternative_definition"]
-            ])
-            frequent_pos_definitions.append(
-                Definition(synset_id=synset["id"], definition=chosen_def)
+        definitions = [
+            Definition(
+                synset_id=syn["id"],
+                definition=random.choice([syn["source_definition"], syn["alternative_definition"]]),
             )
-
-    random.shuffle(frequent_pos_definitions)
-
-    # The correct answer is "none of the above" — always the fixed NOTA letter.
-    none_letter = build_letters(tokenizer).letters[NOTA_LETTER_INDEX]
-
-    start_offset = _random_start_offset(len(frequent_pos_definitions))
-
-    prompt = create_multiple_choice_prompt(
-        word=word,
-        mask_token=tokenizer.mask_token,
-        marked_sentence=marked_sentence,
-        definitions=frequent_pos_definitions,
-        tokenizer=tokenizer,
-        start_offset=start_offset,
-    )
-
-    return TrainingExample(
-        word=word,
-        sentence=chosen_sentence,
-        marked_sentence=marked_sentence,
-        correct_synset_id=f"{chosen_synset['id']}{NONE_SUFFIX}",
-        correct_answer_letter=none_letter,
-        prompt=prompt
-    )
+            for syn in all_synsets if _pos_group(syn["pos"]) == most_frequent_group
+        ]
+        example = _augmented_example(word, sentence, marked_sentence, definitions, None, tokenizer)
+        example.correct_synset_id = f"{s['id']}{NONE_SUFFIX}"
+        return example
+    return None
 
 
-def build_eval_examples_from_wn(
+def build_examples_from_wn(
     wn_examples: list[WordNetExample],
     tokenizer: PreTrainedTokenizer,
+    augment: bool = False,
 ) -> list[TrainingExample]:
-    """Convert :class:`WordNetExample` objects into :class:`TrainingExample` objects.
+    """Convert WordNet examples into prompts using the inference-time option set
+    (``get_definitions``: WordNet sense order, adjectives merged with satellites).
 
-    Mirrors the benchmark's definition-lookup path: for each example, fetch all
-    synset definitions for ``(lemma, pos)`` via the wn library and position the
-    correct answer at the letter matching its index. Definitions are kept in
-    wn iteration order (roughly frequency order) so the more common sense
-    lands on earlier letter slots, matching the inference-time API order.
-    Skips examples where the correct synset isn't among the fetched definitions
-    (can happen when the wn lexicon disagrees with the example's own synset
-    metadata), and any where we'd exceed the letter budget.
+    ``augment=False`` (eval) keeps that order and letter offset 0, exactly what
+    inference builds. ``augment=True`` (training) shuffles options and
+    randomizes the offset like the generated data. Skips examples whose gold
+    synset isn't among the fetched options or that exceed the letter budget.
     """
-    en = load_wn_english()
     letters = build_letters(tokenizer).letters
     max_definitions = len(letters) - 1  # last letter reserved for "none of the above"
 
+    all_definitions = get_definitions([WordQuery(form=ex.lemma, pos=ex.pos) for ex in wn_examples])
     out: list[TrainingExample] = []
-    for ex in wn_examples:
-        defs = fetch_synset_definitions(en, ex.lemma, ex.pos)
-        if ex.synset_id not in defs:
+    for ex, definitions in zip(wn_examples, all_definitions, strict=True):
+        if not 0 < len(definitions) <= max_definitions:
             continue
-        if len(defs) > max_definitions:
+        if not any(d.synset_id == ex.synset_id for d in definitions):
             continue
-        definitions = [
-            Definition(synset_id=sid, definition=text) for sid, text in defs.items()
-        ]
-        correct_idx = next(
-            i for i, d in enumerate(definitions) if d.synset_id == ex.synset_id
-        )
-        correct_letter = letters[correct_idx]
+        if augment:
+            out.append(_augmented_example(ex.word_form, ex.sentence, ex.marked_text, definitions,
+                                          ex.synset_id, tokenizer))
+            continue
+        correct_idx = next(i for i, d in enumerate(definitions) if d.synset_id == ex.synset_id)
         prompt = create_multiple_choice_prompt(
             word=ex.word_form,
             mask_token=tokenizer.mask_token,
@@ -300,61 +252,87 @@ def build_eval_examples_from_wn(
             sentence=ex.sentence,
             marked_sentence=ex.marked_text,
             correct_synset_id=ex.synset_id,
-            correct_answer_letter=correct_letter,
+            correct_answer_letter=letters[correct_idx],
             prompt=prompt,
         ))
     return out
 
 
-def load_training_data(data_dir: Path, tokenizer: PreTrainedTokenizer) -> list[TrainingExample]:
-    """
-    Load all training examples from generated JSON files.
+def _iter_word_files(data_path: Path):
+    """Yield ``(word, synsets)`` from a directory of ``<word>.json`` files or a
+    ``.tar.xz`` of them (one bulk read: friendlier to network filesystems)."""
+    if data_path.is_dir():
+        for json_file in data_path.glob("*.json"):
+            try:
+                with open(json_file) as f:
+                    yield json_file.stem, json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
+                warnings.warn(f"Failed to load {json_file}: {e}", stacklevel=2)
+        return
+    with tarfile.open(data_path, "r:xz") as tar:
+        for member in tar:
+            if not (member.isfile() and member.name.endswith(".json")):
+                continue
+            try:
+                yield Path(member.name).stem, json.load(io.TextIOWrapper(tar.extractfile(member), encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                warnings.warn(f"Failed to load {member.name}: {e}", stacklevel=2)
 
-    For each word file:
-    1. Creates examples for each synset using only same-POS definitions
+
+def load_training_data(data_path: Path, tokenizer: PreTrainedTokenizer,
+                       nota_examples: bool = True) -> list[TrainingExample]:
+    """Load all training examples from the generated word files.
+
+    For each word:
+    1. Creates examples for each synset using only same-POS-group definitions
     2. Creates one "none of the above" example using cross-POS confusion
-
-    Args:
-        data_dir: Directory containing JSON files with synset data
-        tokenizer: The tokenizer to use for creating prompts
-
-    Returns:
-        List of all training examples
     """
     examples = []
-    json_files = list(data_dir.glob("*.json"))
-
-    print(f"Loading data from {len(json_files)} files...")
-
-    for json_file in json_files:
-        word = json_file.stem
-
-        try:
-            with open(json_file) as f:
-                synsets = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
-            warnings.warn(f"Failed to load {json_file}: {e}", stacklevel=2)
-            continue
-
+    n_words = 0
+    for word, synsets in _iter_word_files(data_path):
         if not synsets:
             continue
-
-        # Find most frequent POS tag
-        pos_counter = Counter(synset["pos"] for synset in synsets)
-        most_frequent_pos, _ = pos_counter.most_common(1)[0]
-
-        # Create examples for each synset
+        n_words += 1
+        most_frequent_group, _ = Counter(_pos_group(s["pos"]) for s in synsets).most_common(1)[0]
         for synset in synsets:
-            synset_examples = create_examples_for_synset(synset, word, synsets, tokenizer)
-            examples.extend(synset_examples)
-
-        # Create one "none of the above" example per word
-        none_example = create_none_of_above_example(word, synsets, most_frequent_pos, tokenizer)
-        if none_example:
+            examples.extend(create_examples_for_synset(synset, word, synsets, tokenizer))
+        none_example = create_none_of_above_example(word, synsets, most_frequent_group, tokenizer)
+        if none_example and nota_examples:
             examples.append(none_example)
 
-    print(f"Loaded {len(examples)} training examples")
+    print(f"Loaded {len(examples)} training examples from {n_words} words ({data_path})")
     return examples
+
+
+def build_examples(
+    config: TrainingConfig, tokenizer: PreTrainedTokenizer,
+) -> tuple[list[TrainingExample], list[TrainingExample]]:
+    """Return ``(training_examples, eval_examples)``: generated data (+ optionally
+    the non-held-out WordNet examples) and the held-out WordNet eval slice.
+
+    ``wsd.benchmark --split eval`` uses the same split/seed, so eval metrics
+    track the final benchmark accuracy without leaking.
+    """
+    print(f"\nLoading training data from: {config.data_dir}")
+    training_examples = load_training_data(config.data_dir, tokenizer, config.nota_examples)
+
+    eval_examples: list[TrainingExample] = []
+    wn_eval: list[WordNetExample] = []
+    if config.eval_wn_count > 0 or config.wn_train:
+        wn_eval, wn_rest = split_wn_examples(n_eval=config.eval_wn_count, seed=config.eval_wn_seed)
+        if config.eval_wn_count > 0:
+            eval_examples = build_examples_from_wn(wn_eval, tokenizer)
+            print(f"Held out {len(eval_examples)} wn examples as eval "
+                  f"(requested {config.eval_wn_count}, seed {config.eval_wn_seed})")
+        if config.wn_train:
+            wn_train_examples = build_examples_from_wn(wn_rest, tokenizer, augment=True)
+            print(f"Adding {len(wn_train_examples)} non-held-out wn examples to training")
+            training_examples.extend(wn_train_examples)
+
+
+    random.shuffle(training_examples)
+    print(f"Shuffled {len(training_examples)} training examples")
+    return training_examples, eval_examples
 
 
 class WSDDataset(Dataset):
@@ -373,9 +351,7 @@ class WSDDataset(Dataset):
 
         # Filter out examples whose prompt has no mask token after truncation.
         # A mask-less example produces all-(-100) labels, which contributes
-        # nothing to the loss but still costs a full forward pass — and the
-        # old __getitem__ path emitted one warning per access (N epochs ×
-        # num_workers), drowning real warnings. Catch them once, here.
+        # nothing to the loss but still costs a full forward pass.
         mask_id = tokenizer.mask_token_id
         kept: list[TrainingExample] = []
         dropped = 0
@@ -422,79 +398,23 @@ class WSDDataCollator:
     """Custom data collator that pads to longest sequence in batch."""
 
     def __init__(self, tokenizer: PreTrainedTokenizer):
-        """
-        Initialize the collator.
-
-        Args:
-            tokenizer: The tokenizer to use for padding
-        """
         self.tokenizer = tokenizer
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
-        """
-        Collate a batch of features.
-
-        Args:
-            features: List of feature dictionaries
-
-        Returns:
-            Dictionary of padded tensors
-        """
-        # Extract and convert to tensors
         input_ids = [torch.tensor(f["input_ids"]) for f in features]
         attention_mask = [torch.tensor(f["attention_mask"]) for f in features]
         labels = [torch.tensor(f["labels"]) for f in features]
-
-        # Pad to longest sequence in batch
-        input_ids_padded = pad_sequence(
-            input_ids,
-            batch_first=True,
-            padding_value=self.tokenizer.pad_token_id
-        )
-        attention_mask_padded = pad_sequence(
-            attention_mask,
-            batch_first=True,
-            padding_value=0
-        )
-        labels_padded = pad_sequence(
-            labels,
-            batch_first=True,
-            padding_value=-100
-        )
-
         return {
-            "input_ids": input_ids_padded,
-            "attention_mask": attention_mask_padded,
-            "labels": labels_padded,
+            "input_ids": pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id),
+            "attention_mask": pad_sequence(attention_mask, batch_first=True, padding_value=0),
+            "labels": pad_sequence(labels, batch_first=True, padding_value=-100),
         }
-
-
-def print_device_info():
-    """Print information about available compute devices."""
-    print("=" * 80)
-    print("DEVICE INFORMATION")
-    print("=" * 80)
-    print(f"CUDA available: {torch.cuda.is_available()}")
-
-    if torch.cuda.is_available():
-        print(f"CUDA device count: {torch.cuda.device_count()}")
-        for i in range(torch.cuda.device_count()):
-            print(f"  Device {i}: {torch.cuda.get_device_name(i)}")
-            allocated = torch.cuda.memory_allocated(i) / 1e9
-            reserved = torch.cuda.memory_reserved(i) / 1e9
-            print(f"  Memory allocated: {allocated:.2f} GB")
-            print(f"  Memory reserved: {reserved:.2f} GB")
-    else:
-        print("WARNING: CUDA not available, training will use CPU")
-
-    print("=" * 80 + "\n")
 
 
 def print_gpu_memory():
     """Print current GPU memory usage."""
     if not torch.cuda.is_available():
         return
-
     print("\nGPU Memory:")
     for i in range(torch.cuda.device_count()):
         allocated = torch.cuda.memory_allocated(i) / 1e9
@@ -515,52 +435,41 @@ def print_sample_example(example: TrainingExample):
     print("=" * 80)
 
 
-def main():
-    """Main training function."""
-    # Parse command line arguments
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a word sense disambiguation model")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="Model name or path")
-    parser.add_argument("--data-dir", type=Path, help="Directory containing training data")
+    parser.add_argument("--data-dir", type=Path, help="Generated data: directory of <word>.json or a .tar.xz of them")
     parser.add_argument("--output-dir", type=Path, help="Directory to save model outputs")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Training batch size")
     parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate")
-    parser.add_argument("--num-epochs", type=int, default=1, help="Number of training epochs")
-    parser.add_argument(
-        "--max-steps",
-        type=int,
-        default=-1,
-        help="Maximum number of training steps (-1 for no limit, useful for debugging)"
-    )
+    parser.add_argument("--num-epochs", type=float, default=1, help="Number of training epochs")
+    parser.add_argument("--max-steps", type=int, default=-1,
+                        help="Maximum number of training steps (-1 for no limit, useful for debugging)")
     parser.add_argument("--seed", type=int, default=DEFAULT_RANDOM_SEED, help="Random seed")
     parser.add_argument("--report-to", type=str, default=TrainingConfig.report_to,
                         help="Where Trainer should log (e.g. 'wandb', 'none')")
+    parser.add_argument("--run-name", type=str, help="Run name for the tracker (defaults to output dir name)")
     parser.add_argument("--freeze-embeddings", action="store_true",
                         help="Freeze the input embedding layer (~51M params)")
-    parser.add_argument("--eval-steps", type=int, default=TrainingConfig.eval_steps,
-                        help="Run eval every N steps")
+    parser.add_argument("--eval-steps", type=int, default=TrainingConfig.eval_steps, help="Run eval every N steps")
     parser.add_argument("--eval-wn-count", type=int, default=TrainingConfig.eval_wn_count,
                         help="Hold out this many wn benchmark examples as the eval set (0 disables eval)")
-    parser.add_argument(
-        "--weight-decay",
-        type=float,
-        default=DEFAULT_WEIGHT_DECAY,
-        help="AdamW weight decay (L2 regularization)",
-    )
-    parser.add_argument(
-        "--label-smoothing",
-        type=float,
-        default=DEFAULT_LABEL_SMOOTHING,
-        help="Label smoothing factor passed to TrainingArguments.label_smoothing_factor",
-    )
-    parser.add_argument(
-        "--lr-scheduler",
-        type=str,
-        default=DEFAULT_LR_SCHEDULER,
-        help="HuggingFace LR scheduler type (e.g. linear, cosine, cosine_with_restarts)",
-    )
-    args = parser.parse_args()
+    parser.add_argument("--wn-train", action="store_true",
+                        help="Also train on the WordNet example sentences that are not held out for eval")
+    parser.add_argument("--no-nota-examples", action="store_true",
+                        help="Drop the cross-POS 'none of the above' training examples")
+    parser.add_argument("--weight-decay", type=float, default=DEFAULT_WEIGHT_DECAY, help="AdamW weight decay")
+    parser.add_argument("--label-smoothing", type=float, default=DEFAULT_LABEL_SMOOTHING,
+                        help="Label smoothing applied in the model loss")
+    parser.add_argument("--lr-scheduler", type=str, default=DEFAULT_LR_SCHEDULER,
+                        help="HuggingFace LR scheduler type (e.g. linear, cosine, cosine_with_restarts)")
+    parser.add_argument("--nodes", type=int, help=argparse.SUPPRESS)  # appended by run_distributed.py
+    return parser.parse_args(argv)
 
-    # Create configuration
+
+def main(argv: list[str] | None = None):
+    """Main training function."""
+    args = parse_args(argv)
     config = TrainingConfig(
         model_name=args.model,
         data_dir=args.data_dir or TrainingConfig.data_dir,
@@ -573,25 +482,27 @@ def main():
         report_to=args.report_to,
         eval_steps=args.eval_steps,
         eval_wn_count=args.eval_wn_count,
+        wn_train=args.wn_train,
+        nota_examples=not args.no_nota_examples,
         weight_decay=args.weight_decay,
         label_smoothing=args.label_smoothing,
         lr_scheduler=args.lr_scheduler,
     )
+    os.environ.setdefault("WANDB_PROJECT", "modernbert-wsd-training")
 
     # Set random seeds for reproducibility
     random.seed(config.random_seed)
     torch.manual_seed(config.random_seed)
 
-    # Print device information
-    print_device_info()
-
-    # Load model and tokenizer
+    # Load model and tokenizer. Weights stay fp32 (bf16 autocast happens in the
+    # Trainer): with pure-bf16 weights, lr ~3e-5 updates are below bf16's
+    # resolution on many weights and get rounded away.
     print(f"Loading model and tokenizer: {config.model_name}")
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
     model = WSDModernBertForMaskedLM.from_pretrained(
         config.model_name,
-        device_map="auto",
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        dtype=torch.float32,
+        attn_implementation=attn_implementation(),
     )
 
     # Run the LM head only on mask positions — every training example has
@@ -599,6 +510,7 @@ def main():
     # non-mask positions (avg prompt length ~150, one mask per prompt).
     # Inference uses a parallel path via ``prediction_positions`` in model.py.
     model.sparse_prediction = True
+    model.config.label_smoothing = config.label_smoothing  # applied in WSDModernBertForMaskedLM.forward
 
     # If we loaded a pristine checkpoint the decoder is still full-vocab; prune
     # it down to the 128 answer-letter rows. When resuming from a previously
@@ -625,36 +537,9 @@ def main():
             f"Froze embeddings: {frozen/1e6:.1f}M params frozen; "
             f"trainable {trainable/1e6:.1f}M / total {total/1e6:.1f}M"
         )
+    print(f"Model dtype: {model.dtype}, attention: {model.config._attn_implementation}")
 
-    if hasattr(model, 'hf_device_map'):
-        print(f"\nModel device map: {model.hf_device_map}")
-    print(f"Model dtype: {model.dtype}")
-
-    # Load training data
-    print(f"\nLoading training data from: {config.data_dir}")
-    training_examples = load_training_data(config.data_dir, tokenizer)
-
-    # Shuffle the training examples
-    random.shuffle(training_examples)
-    print(f"Shuffled {len(training_examples)} training examples")
-
-    # Use a deterministic slice of the wn benchmark set as the eval split.
-    # Because benchmark_local.py uses the same split/seed and skips the held-out
-    # slice, eval metrics track final benchmark accuracy without leaking.
-    if config.eval_wn_count > 0:
-        wn_eval, _ = split_wn_examples(
-            n_eval=config.eval_wn_count,
-            seed=config.eval_wn_seed,
-        )
-        eval_examples = build_eval_examples_from_wn(wn_eval, tokenizer)
-        print(
-            f"Held out {len(eval_examples)} wn examples as eval "
-            f"(requested {config.eval_wn_count}, seed {config.eval_wn_seed})"
-        )
-    else:
-        eval_examples = []
-
-    # Create datasets and data collator
+    training_examples, eval_examples = build_examples(config, tokenizer)
     train_dataset = WSDDataset(training_examples, tokenizer, letter_set, config.max_length)
     eval_dataset = (
         WSDDataset(eval_examples, tokenizer, letter_set, config.max_length)
@@ -679,9 +564,6 @@ def main():
     def compute_metrics(eval_pred):
         predictions, labels = eval_pred  # predictions: (N_masks,), labels: (B, L)
         labels_flat = labels[labels != -100]
-        # Alignment between preds and labels depends on both sides flattening
-        # row-major; if that invariant ever drifts (e.g. a preprocess hook
-        # reshapes labels), accuracy would silently go wrong rather than error.
         assert predictions.shape == labels_flat.shape, (
             f"sparse prediction/label shape mismatch: "
             f"{predictions.shape} vs {labels_flat.shape}"
@@ -699,14 +581,14 @@ def main():
     )
     training_args = TrainingArguments(
         output_dir=str(config.output_dir),
+        run_name=args.run_name or config.output_dir.name,
         num_train_epochs=config.num_epochs,
         max_steps=config.max_steps,
         per_device_train_batch_size=config.batch_size,
         per_device_eval_batch_size=config.batch_size,
         learning_rate=config.learning_rate,
-        warmup_ratio=config.warmup_ratio,
+        warmup_steps=config.warmup_ratio,  # float < 1 is a ratio in transformers 5
         weight_decay=config.weight_decay,
-        label_smoothing_factor=config.label_smoothing,
         lr_scheduler_type=config.lr_scheduler,
         logging_steps=10,
         eval_strategy="steps" if eval_enabled else "no",
@@ -720,9 +602,9 @@ def main():
         bf16=torch.cuda.is_available(),
         dataloader_num_workers=0,
         report_to=config.report_to,
+        seed=config.random_seed,
     )
 
-    # Create trainer
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -734,27 +616,18 @@ def main():
         preprocess_logits_for_metrics=preprocess_logits_for_metrics if eval_enabled else None,
     )
 
-    # Print training info
     if config.max_steps > 0:
         print(f"\nStarting training for max {config.max_steps} step(s) (debugging mode)...")
     else:
         print(f"\nStarting training for {config.num_epochs} epoch(s)...")
-    print(f"Using device: {training_args.device}")
-    print(f"Number of GPUs: {training_args.n_gpu}")
-    print(f"FP16/BF16: {training_args.fp16}/{training_args.bf16}")
+    print(f"Using device: {training_args.device}, GPUs: {training_args.n_gpu}, bf16: {training_args.bf16}")
     print_gpu_memory()
 
-    # Train
     trainer.train()
-
     print_gpu_memory()
-
-    # Save the final model
-    print("\nTraining complete!")
-    print(f"Model saved to: {config.output_dir}")
 
     final_model_path = config.output_dir / "final"
-    print(f"Saving final model to: {final_model_path}")
+    print(f"\nTraining complete! Saving final model to: {final_model_path}")
     trainer.save_model(str(final_model_path))
     tokenizer.save_pretrained(str(final_model_path))
 
@@ -768,7 +641,10 @@ def main():
             "num_letters": len(letter_set.letters),
         }, f, indent=2)
     print(f"Wrote answer-letter sidecar to: {sidecar}")
+    if eval_enabled:
+        print(f"Best eval accuracy: {trainer.state.best_metric}")
     print("Done!")
+    return final_model_path
 
 
 if __name__ == "__main__":
