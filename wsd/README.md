@@ -73,34 +73,17 @@ We automatically mark target words with asterisks (*word*) in the example senten
 For each example, we perform WSD given the marked sentence, the lemma, and the part-of-speech tag,
 then compare the predicted synset ID against the ground truth.
 
-Install
+Install the `wn` library (`pip install ".[benchmark]"`) and have the WordNet API running (`WORDNET_URL`, see the
+top-level README), then:
 
 ```shell
-pip install ".[benchmark]"
+python -m wsd.benchmark                       # all 27.8k examples
+python -m wsd.benchmark --split eval          # the 5k-example slice held out during training
+python -m wsd.benchmark --failures fails.jsonl  # dump mispredictions for analysis
 ```
 
-Start a wordnet server
-
-```shell
-docker run --platform=linux/amd64 -e PORT=8080 -p 8001:8080 ghcr.io/sign/wn:v0.1.0
-```
-
-Set `.env`:
-
-```shell
-WORDNET_URL=http://127.0.0.1:8001
-```
-
-With flash attention on NVIDIA DGX Spark, set:
-```shell
-export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
-```
-
-Run the benchmark:
-
-```shell
-python wsd/benchmark.py
-```
+Under `torchrun` the examples are sharded across GPUs. With flash attention on NVIDIA DGX Spark, set
+`TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas`.
 
 | Device           | Model      | Time      | Accuracy | Notes                                    |
 |------------------|------------|-----------|----------|------------------------------------------|
@@ -116,10 +99,6 @@ python wsd/benchmark.py
 | NVIDIA DGX Spark | ModernBERT | 00:04:59* | 67.1%    | After 1 Epoch (300k+ sentences)          |
 
 *machine under other load, time is not reliable
-
-
-50% accuracy might seem bad. However, remember we only run it on non-trivial cases, and we expect 
-the language distribution to be uniform. In a real test (like the above `bass` sentence, it performs a lot better).
 
 ## More Examples
 

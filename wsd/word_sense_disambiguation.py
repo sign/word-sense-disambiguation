@@ -12,7 +12,6 @@ from wsd.prompt import (
     create_marked_sentence,
     create_multiple_choice_prompt,
 )
-from wsd.spacy_utils import run_spacy_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -356,6 +355,10 @@ def _extract_entities(doc) -> list[Entity]:
 
 
 def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
+    # spaCy is only needed for full-text disambiguation; keep it out of the
+    # import graph so training and benchmarks run in environments without it.
+    from wsd.spacy_utils import run_spacy_pipeline
+
     doc = run_spacy_pipeline(text, language)
 
     # First pass: Create all base tokens and identify content words to disambiguate
