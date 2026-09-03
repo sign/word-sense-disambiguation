@@ -8,17 +8,27 @@ We expose a [web server](./wsd/server.py) that can be used to disambiguate words
 
 ## Environment Variables
 
-The application requires the following environment variable:
-
-- `WORDNET_URL`: URL of the WordNet API server (default: `http://127.0.0.1:8000`)
+- `WORDNET_URL`: URL of the WordNet API server (see below). Required; the server image sets it. When it is
+  unset and the API package is installed (the cluster images built by `training/Enrootfile.sh` and
+  `wsd/Enrootfile.sh`), the process starts a private API instance and uses that, so batch, training and
+  benchmark jobs need no separate service.
+- `WSD_MODEL`: model name or local checkpoint directory (default `sign/ModernBERT-Large-Instruct-WSD`).
 
 ### WordNet API server
 
-Start the WordNet API server (used by both local and Docker setups):
+Definitions come from the WordNet API in https://github.com/sign/wn (the `wn` library plus a REST layer, with
+Wikidata lexemes merged into the English lexicon). Run it with Docker:
 
 ```shell
-docker run -p 8000:8000 ghcr.io/sign/wn
+docker run -d --name wn -p 8000:8080 ghcr.io/sign/wn:latest
+export WORDNET_URL=http://127.0.0.1:8000
+curl "$WORDNET_URL/health"
 ```
+
+The server listens on `$PORT` (default 8080). It is stateless, so one instance can serve many clients; the
+batch endpoint used here (`POST /lexicons/omw-en:1.4/definitions`) answers ~1,000 queries per request.
+Without Docker (e.g. a Slurm node with enroot): `enroot import -o wn.sqsh docker://ghcr.io#sign/wn:latest`
+and run `uvicorn wn.web:app --host 0.0.0.0 --port 8080` inside it, or rely on the built-in local start above.
 
 ### Running locally
 
