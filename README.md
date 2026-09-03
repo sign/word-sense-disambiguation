@@ -44,6 +44,19 @@ docker build --platform="linux/amd64" -t wsd .
 docker run -p 8005:8080 -e PORT=8080 -e WORDNET_URL=http://host.docker.internal:8000 wsd
 ```
 
+## Batch processing
+
+To disambiguate a corpus offline (one sentence per line, one JSON line out per sentence), split it into
+many files and run `wsd.batch`; under `torchrun` each rank takes every N-th file and finished files are
+skipped on restart:
+
+```shell
+split -n l/256 corpus.txt shards/part-
+python -m wsd.batch --input 'shards/part-*' --output-dir out/ [--no-entities] [--skip-single-sense]
+```
+
+See [wsd/README.md](./wsd/README.md#throughput) for measured throughput.
+
 ## Usage
 
 To view an output, visit this [example link](http://localhost:8005/disambiguate?text=Obama%20told%20the%20bus%20driver,%20to%20drive%20to%20D.C.&lang=en&output=html) (adjust port if running locally):
