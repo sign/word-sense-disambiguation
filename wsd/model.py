@@ -100,8 +100,12 @@ class WSDModernBertForMaskedLM(ModernBertForMaskedLM):
 
         loss = None
         if labels is not None:
-            loss = self.loss_function(
-                logits, labels, vocab_size=self.decoder.out_features, **kwargs
+            # Label smoothing lives here rather than in Trainer's
+            # label_smoothing_factor: the Trainer implements that by pulling
+            # labels out of the forward call, which would skip the sparse path.
+            loss = nn.functional.cross_entropy(
+                logits.float(), labels, ignore_index=self.sparse_pred_ignore_index,
+                label_smoothing=float(getattr(self.config, "label_smoothing", 0.0)),
             )
 
         return MaskedLMOutput(

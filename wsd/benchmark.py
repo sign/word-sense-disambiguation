@@ -95,11 +95,6 @@ def collect_wordnet_examples():
                     )
 
 
-def fetch_synset_definitions(en, lemma: str, pos: str) -> dict[str, str]:
-    """``{synset_id: definition}`` for ``(lemma, pos)`` via the inference-time lookup (used by training/train.py)."""
-    return {d.synset_id: d.definition for d in get_definitions([WordQuery(form=lemma, pos=pos)])[0]}
-
-
 def evaluate(examples: list[WordNetExample], batch_size: int = 64, failures_path: str | None = None,
              progress: bool = True) -> tuple[int, int, float]:
     """Return ``(correct, total, seconds)`` over ``examples``; optionally dump misses as JSONL."""

@@ -16,7 +16,9 @@ The training script fine-tunes the model to predict which definition best fits a
 
 ## Data Format
 
-Training data is generated using `training/data/generate.py` and stored in `training/data/generated/`. Each JSON file represents one word form with multiple senses:
+Training data is generated using `training/data/generate.py` into `training/data/generated/` and shipped
+compressed as `training/data/generated.tar.xz`, which the trainer reads directly (pass a directory or the
+tarball to `--data-dir`). Each JSON file represents one word form with multiple senses:
 
 ```json
 [
@@ -38,6 +40,15 @@ The data was compressed using
 ```shell
 tar -I "xz -9e" -cvf generated.tar.xz generated/
 ```
+
+## Extra training data
+
+- `--wn-train`: adds WordNet's own example sentences, except the held-out eval slice (`--eval-wn-count`,
+  default 5000 examples, same split as `python -m wsd.benchmark --split eval`).
+
+Adjective (`a`) and satellite-adjective (`s`) senses are one option set, as at inference. Weights are kept in
+fp32 with bf16 autocast (pure-bf16 weights round away most updates at lr 3e-5). Flash attention 2 is used
+when installed.
 
 ## Training Process
 
