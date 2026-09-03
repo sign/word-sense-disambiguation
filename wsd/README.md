@@ -100,6 +100,22 @@ Under `torchrun` the examples are sharded across GPUs. With flash attention on N
 
 *machine under other load, time is not reliable
 
+## Throughput
+
+Offline batch pipeline (`python -m wsd.batch`), 100k Wikipedia sentences (~10.7 model prompts per sentence),
+one process per GPU, steady state per H100 80GB. spaCy `en_core_web_trf` runs on the GPU too.
+
+| Configuration                                                   | Sentences/s per GPU | Notes                                            |
+|-----------------------------------------------------------------|--------------------:|--------------------------------------------------|
+| Original code (`WSD_CHUNK_SIZE=512`)                            | 27                  | WordNet sqlite over NFS dominated (6 ms/lookup)  |
+| + local `wn.db` copy, tokenize once, CPU probabilities          | 55                  |                                                  |
+| + `WSD_COMPILE=1` (torch.compile, default in `wsd.batch`)       | 75                  | one-time ~60s compile per process                |
+| + `--no-entities --skip-single-sense`                           | 85                  | no entity linking; 1-sense words assigned directly |
+
+A billion sentences at ~600 sentences/s per 8-GPU node is roughly 19 node-days. Remaining levers, in order:
+a smaller model (ModernBERT-base is ~2.5x cheaper per prompt), flash-attention in the serve image, a
+shorter prompt template (needs retraining).
+
 ## More Examples
 
 #### the big brown fox jumps over the lazy dog
