@@ -64,8 +64,7 @@ def run_spacy_pipe(texts: list[str], language: str = "en", batch_size: int = 256
     """Run the pipeline over many texts at once (``nlp.pipe``), optionally
     skipping the CPU-bound entity linker."""
     nlp, backend = _get_pipeline_entry(language)
-    # NER is not used downstream (linked entities come from entityLinker, which works off the parse).
-    disable = ["ner"] + ([] if entities else ["entityLinker"])
+    disable = [] if entities else ["entityLinker"]
     with use_ops(backend), nlp.select_pipes(disable=disable):
         return list(nlp.pipe(texts, batch_size=batch_size))
 

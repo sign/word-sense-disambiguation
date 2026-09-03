@@ -145,7 +145,7 @@ one process per GPU, steady state per H100 80GB. spaCy `en_core_web_trf` runs on
 | + local `wn.db` copy, tokenize once, CPU probabilities          | 55                  |                                                  |
 | + `WSD_COMPILE=1` (torch.compile, default in `wsd.batch`)       | 75                  | one-time ~60s compile per process                |
 | definitions via the WordNet API instead of the local file       | 60                  | ~0.35 ms of server work per query                |
-| + memoized API lookups, 16 tokenizer threads, spaCy in its own process, no NER | **125** | output identical; entity linking on    |
+| + memoized API lookups, 16 tokenizer threads, spaCy in its own process | **125** | output identical; entity linking on    |
 | `--skip-single-sense`                                           | ~140 (est.)         | 1-sense words assigned directly (20% of prompts) |
 
 A billion sentences at ~1,000 sentences/s per 8-GPU node is roughly 12 node-days. What did not work:
