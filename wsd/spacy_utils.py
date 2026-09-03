@@ -60,6 +60,15 @@ def run_spacy_pipeline(text: str, language: str = "en"):
         return nlp(text)
 
 
+def run_spacy_pipe(texts: list[str], language: str = "en", batch_size: int = 256, entities: bool = True) -> list:
+    """Run the pipeline over many texts at once (``nlp.pipe``), optionally
+    skipping the CPU-bound entity linker."""
+    nlp, backend = _get_pipeline_entry(language)
+    disable = [] if entities else ["entityLinker"]
+    with use_ops(backend), nlp.select_pipes(disable=disable):
+        return list(nlp.pipe(texts, batch_size=batch_size))
+
+
 def warm_cpu_spacy_pipeline(language: str = "en") -> None:
     """Load and warm a CPU pipeline (~2.5s) so requests can be served
     immediately, without paying the GPU pipeline's one-time ~6s kernel

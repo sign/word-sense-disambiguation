@@ -11,8 +11,26 @@ from wsd.model import WSDModernBertForMaskedLM
 from wsd.model_surgery import prune_decoder
 
 # Allow overriding the model source (e.g. a local checkpoint directory) for
-# benchmarking or evaluation without editing call sites.
-_DEFAULT_MODEL = os.environ.get("WSD_MODEL", "sign/ModernBERT-Large-Instruct-WSD")
+# benchmarking or evaluation without editing call sites. Read at call time so a
+# process can set WSD_MODEL after import (the sweep evaluates what it trained).
+_DEFAULT_MODEL = "sign/ModernBERT-Large-Instruct-WSD"
+
+
+def default_model_name() -> str:
+    return os.environ.get("WSD_MODEL", _DEFAULT_MODEL)
+
+
+def attn_implementation() -> str | None:
+    """Prefer flash-attention 2 when installed: ModernBERT then unpads the batch,
+    so padding waste disappears and large mixed-length batches run at full speed.
+    Falls back to the transformers default (sdpa) otherwise."""
+    if not torch.cuda.is_available():
+        return None
+    try:
+        import flash_attn  # noqa: F401
+    except ImportError:
+        return None
+    return "flash_attention_2"
 
 
 class PromptMaskError(ValueError):
@@ -37,7 +55,8 @@ class UnmaskResult:
 
 
 @cache
-def load_model(model_name: str = _DEFAULT_MODEL) -> ModelComponents:
+def load_model(model_name: str | None = None) -> ModelComponents:
+    model_name = model_name or default_model_name()
     if torch.cuda.is_available():
         device = "cuda"
     elif torch.backends.mps.is_available():
@@ -60,6 +79,7 @@ def load_model(model_name: str = _DEFAULT_MODEL) -> ModelComponents:
         model_name,
         device_map=device,
         dtype=dtype,
+        attn_implementation=attn_implementation(),
     )
     # Stock checkpoints ship with a full-vocab decoder; prune it to the 128
     # answer letters so decoder outputs are indexed by compact ids. Checkpoints
@@ -68,33 +88,36 @@ def load_model(model_name: str = _DEFAULT_MODEL) -> ModelComponents:
     if model.decoder.out_features != len(letter_set.letters):
         letter_set = prune_decoder(model, tokenizer)
     model.eval()
+    # torch.compile of the encoder: ~1.5x on H100 batch inference, at the cost
+    # of ~50s compile per process (needs a C compiler for triton). Off by
+    # default for the latency-sensitive server; wsd.batch turns it on.
+    if os.environ.get("WSD_COMPILE") == "1" and device == "cuda":
+        model.model = torch.compile(model.model, dynamic=True)
     return ModelComponents(model=model, tokenizer=tokenizer, device=device, letter_set=letter_set)
 
 
 def unmask_token(text: str) -> UnmaskResult:
-    components = load_model()
-    return _unmask_chunk([text], components)[0]
+    return unmask_token_batch([text])[0]
 
 
 # Sub-batch size used when length-bucketing inside ``unmask_token_batch``.
-# Four wins on real WSD traffic on GB10: a disambiguated sentence has 6-20
-# content words whose prompt lengths span 2-4x (few-sense vs many-sense
-# words), so within-chunk padding waste dominates once the chunk grows
-# past ~4. Larger chunks look better only on artificially length-homogeneous
-# batches.
-_BUCKET_CHUNK_SIZE = 4
+# With sdpa attention every row is padded to the chunk's longest prompt, and
+# on GB10 a chunk of 4 won on single-sentence traffic (6-20 prompts spanning
+# 2-4x in length). With flash-attention 2 the batch is unpadded, so padding
+# waste is gone and big chunks win outright (H100: 4 -> 512 is ~10x).
+# Override with WSD_CHUNK_SIZE.
+_BUCKET_CHUNK_SIZE = int(os.environ.get("WSD_CHUNK_SIZE", 512 if attn_implementation() else 4))
 
 
 def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     """
     Batch version of unmask_token that processes multiple texts in parallel.
 
-    Inputs are sorted by tokenized length and processed in fixed-size chunks
-    so each forward pass only pads up to the longest prompt *in its chunk*
-    rather than the longest in the whole batch. Results are un-sorted before
-    return, so callers still see outputs in input order. For the typical WSD
-    prompt distribution (57..262 tokens) this roughly doubles throughput at
-    large batch sizes.
+    Inputs are tokenized once (the fast tokenizer parallelizes a list), sorted
+    by length and processed in fixed-size chunks, so each forward pass only pads
+    up to the longest prompt *in its chunk* rather than the longest in the whole
+    batch. Results are un-sorted before return, so callers still see outputs in
+    input order.
 
     Args:
         texts: List of strings, each containing a mask token
@@ -109,21 +132,21 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
         return []
 
     components = load_model()
+    tokenizer = components.tokenizer
 
-    # Sort by pre-tokenized length so each chunk below has similar-length
-    # prompts. We call the tokenizer twice (once here for lengths, once below
-    # for padded tensors), but the first call is Python-side and cheap.
-    lengths = [
-        len(components.tokenizer(t, add_special_tokens=True)["input_ids"])
-        for t in texts
-    ]
-    order = sorted(range(len(texts)), key=lambda i: lengths[i])
+    encodings = tokenizer(texts)["input_ids"]
+    if any(tokenizer.mask_token_id not in ids for ids in encodings):
+        raise PromptMaskError()
+    order = sorted(range(len(texts)), key=lambda i: len(encodings[i]))
 
-    # Build the chunk list up front so we can dispatch in one loop.
-    chunks: list[tuple[list[int], list[str]]] = []
+    # Build the chunk list up front so we can dispatch in one loop: each chunk
+    # is (original indices, padded tensors, mask positions).
+    chunks: list[tuple[list[int], dict[str, torch.Tensor], torch.Tensor]] = []
     for start in range(0, len(order), _BUCKET_CHUNK_SIZE):
         chunk_idx = order[start : start + _BUCKET_CHUNK_SIZE]
-        chunks.append((chunk_idx, [texts[i] for i in chunk_idx]))
+        padded = tokenizer.pad({"input_ids": [encodings[i] for i in chunk_idx]}, return_tensors="pt")
+        positions = _prediction_positions(padded["input_ids"], tokenizer.mask_token_id)
+        chunks.append((chunk_idx, dict(padded), positions))
 
     # On CUDA, launch each chunk on its own stream so the GPU can overlap
     # kernel execution across chunks instead of us serializing on the host.
@@ -133,10 +156,10 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     if components.device == "cuda" and len(chunks) > 1:
         chunk_results = _unmask_chunks_cuda_parallel(chunks, components)
     else:
-        chunk_results = [_unmask_chunk(texts_, components) for _, texts_ in chunks]
+        chunk_results = [_unmask_chunk(inputs, positions, components) for _, inputs, positions in chunks]
 
     results: list[UnmaskResult | None] = [None] * len(texts)
-    for (chunk_idx, _), chunk_res in zip(chunks, chunk_results, strict=True):
+    for (chunk_idx, _, _), chunk_res in zip(chunks, chunk_results, strict=True):
         for orig_idx, res in zip(chunk_idx, chunk_res, strict=True):
             results[orig_idx] = res
 
@@ -166,8 +189,12 @@ def _prediction_positions(input_ids: torch.Tensor, mask_token_id: int) -> torch.
 def _logits_to_results(
     logits: torch.Tensor, letters: tuple[str, ...],
 ) -> list[UnmaskResult]:
-    """Turn ``(batch, answer_vocab)`` logits into per-example UnmaskResults."""
-    probs = torch.softmax(logits, dim=-1)
+    """Turn ``(batch, answer_vocab)`` logits into per-example UnmaskResults.
+
+    Probabilities come back on the CPU in one copy per chunk; callers index
+    them per option, which on a GPU tensor would be one device sync each.
+    """
+    probs = torch.softmax(logits.float(), dim=-1).cpu()
     compact_ids = torch.argmax(probs, dim=-1).tolist()
     return [
         UnmaskResult(token=letters[cid], probabilities=p)
@@ -176,27 +203,21 @@ def _logits_to_results(
 
 
 def _unmask_chunks_cuda_parallel(
-    chunks: list[tuple[list[int], list[str]]],
+    chunks: list[tuple[list[int], dict[str, torch.Tensor], torch.Tensor]],
     components: ModelComponents,
 ) -> list[list[UnmaskResult]]:
     """Dispatch each chunk's forward pass on its own CUDA stream.
 
-    Tokenization and mask validation run on CPU before we enter the stream
-    context so the per-chunk dispatch can overlap — on-GPU validation would
-    force a ``.item()`` sync that drains the stream and erases the parallelism.
+    Tokenization and mask validation already happened on the CPU, so the
+    per-chunk dispatch can overlap — on-GPU validation would force a
+    ``.item()`` sync that drains the stream and erases the parallelism.
     """
-    mask_id = components.tokenizer.mask_token_id
     streams = [torch.cuda.Stream() for _ in chunks]
     pending: list[tuple[torch.Tensor, torch.cuda.Stream]] = []
 
-    for (_, chunk_texts), stream in zip(chunks, streams, strict=True):
-        cpu_inputs = components.tokenizer(
-            chunk_texts, return_tensors="pt", padding=True,
-        )
-        positions_cpu = _prediction_positions(cpu_inputs.input_ids, mask_id)
-
+    for (_, cpu_inputs, positions_cpu), stream in zip(chunks, streams, strict=True):
         with torch.cuda.stream(stream), torch.no_grad():
-            inputs = cpu_inputs.to(components.device, non_blocking=True)
+            inputs = {k: v.to(components.device, non_blocking=True) for k, v in cpu_inputs.items()}
             positions = positions_cpu.to(components.device, non_blocking=True)
             outputs = components.model(**inputs, prediction_positions=positions)
         pending.append((outputs.logits, stream))
@@ -209,20 +230,13 @@ def _unmask_chunks_cuda_parallel(
     return results
 
 
-def _unmask_chunk(texts: list[str], components: ModelComponents) -> list[UnmaskResult]:
-    """Single forward pass for a length-homogeneous chunk."""
-    # Compute mask positions on the CPU tensor before moving to device so the
-    # validation sum/any doesn't force a device→host sync.
-    cpu_inputs = components.tokenizer(texts, return_tensors="pt", padding=True)
-    positions_cpu = _prediction_positions(
-        cpu_inputs.input_ids, components.tokenizer.mask_token_id,
-    )
-
-    inputs = cpu_inputs.to(components.device)
+def _unmask_chunk(
+    cpu_inputs: dict[str, torch.Tensor], positions_cpu: torch.Tensor, components: ModelComponents,
+) -> list[UnmaskResult]:
+    """Single forward pass for a length-homogeneous, already padded chunk."""
+    inputs = {k: v.to(components.device) for k, v in cpu_inputs.items()}
     positions = positions_cpu.to(components.device)
     with torch.no_grad():
         outputs = components.model(**inputs, prediction_positions=positions)
 
     return _logits_to_results(outputs.logits, components.letter_set.letters)
-
-

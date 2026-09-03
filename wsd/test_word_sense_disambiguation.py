@@ -298,3 +298,21 @@ def test_constants():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_nota_threshold_env(monkeypatch):
+    """WSD_NOTA_THRESHOLD makes NOTA need a minimum share of the valid-choice mass."""
+    from wsd.letters import NOTA_LETTER_INDEX
+    from wsd.word_sense_disambiguation import _result_from_probs
+
+    probs = torch.zeros(128)
+    probs[0], probs[1], probs[NOTA_LETTER_INDEX] = 0.3, 0.2, 0.5
+    definitions = [Definition("a", "x"), Definition("b", "y")]
+    monkeypatch.delenv("WSD_NOTA_THRESHOLD", raising=False)
+    assert _result_from_probs(probs, definitions).definition == NONE_OF_THE_ABOVE
+    monkeypatch.setenv("WSD_NOTA_THRESHOLD", "0.6")
+    result = _result_from_probs(probs, definitions)
+    assert result.synset_id == "a"
+    assert abs(result.confidence - 0.3) < 1e-6
+    monkeypatch.setenv("WSD_NOTA_THRESHOLD", "0.4")
+    assert _result_from_probs(probs, definitions).definition == NONE_OF_THE_ABOVE

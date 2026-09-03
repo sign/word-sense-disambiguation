@@ -130,7 +130,7 @@ async def lifespan(app: Starlette):
         gpu_swap.cancel()
 
 
-app = Starlette(debug=True, routes=routes, middleware=middlewares,
+app = Starlette(debug=os.environ.get("DEBUG") == "1", routes=routes, middleware=middlewares,
                 lifespan=lifespan,
                 exception_handlers={
                     HTTPException: http_exception_handler,

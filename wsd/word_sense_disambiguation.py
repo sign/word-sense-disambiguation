@@ -1,4 +1,5 @@
 import logging
+import os
 from dataclasses import dataclass
 
 import requests
@@ -17,6 +18,12 @@ logger = logging.getLogger(__name__)
 
 # Constants
 NO_DEFINITIONS_FOUND = "No definitions found"
+_MAX_QUERIES_PER_REQUEST = 1000
+# Minimum (renormalized) probability for "none of the above" to win. 0 keeps
+# plain argmax; >1 disables NOTA. The model over-predicts NOTA on long natural
+# sentences (trained on short WordNet-style examples), so batch users may want
+# to raise this. Read at call time so the sweep can vary it.
+_nota_threshold = lambda: float(os.environ.get("WSD_NOTA_THRESHOLD", "0"))  # noqa: E731
 
 
 @dataclass
@@ -73,21 +80,19 @@ class WordSenseDisambiguation:
 
 
 def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
-    """
-    Internal function to fetch definitions for multiple words using the batch endpoint.
-
-    Args:
-        queries: List of WordQuery objects with form and pos
-        language: Language code (default: "en")
-
-    Returns:
-        List of definition lists, one per query (in same order as input).
-        Each definition list contains Definition objects.
-    """
+    """Fetch definitions for exact (form, pos) queries from the WordNet API batch
+    endpoint, one list per query, in input order."""
     if not queries:
         return []
 
-    # Prepare the request payload
+    # Training builds hundreds of thousands of queries at once; keep requests bounded.
+    if len(queries) > _MAX_QUERIES_PER_REQUEST:
+        return [
+            d
+            for start in range(0, len(queries), _MAX_QUERIES_PER_REQUEST)
+            for d in _get_definitions_raw(queries[start:start + _MAX_QUERIES_PER_REQUEST], language)
+        ]
+
     url = f"{WORDNET_URL}/lexicons/omw-{language}:1.4/definitions"
     payload = {
         "queries": [{"form": q.form, "pos": q.pos} for q in queries]
@@ -110,7 +115,7 @@ def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list
         return [[] for _ in queries]
 
     # Parse response and maintain order. Definitions are kept in the order
-    # returned by the API — typically WordNet's frequency order — so the
+    # returned by the API — WordNet's sense (frequency) order — so the
     # more common senses land on earlier letter slots.
     results = [
         [
@@ -181,8 +186,10 @@ def _result_from_probs(
     Confidence is renormalized over the valid choices only.
     """
     choice_probs = get_choice_probabilities(probs, definitions)
-    best_choice_idx = choice_probs.index(max(choice_probs))
     total_prob = sum(choice_probs)
+    best_choice_idx = choice_probs.index(max(choice_probs))
+    if best_choice_idx == len(definitions) and choice_probs[-1] < _nota_threshold() * total_prob:
+        best_choice_idx = choice_probs.index(max(choice_probs[:-1]))  # best real sense instead of NOTA
     normalized_score = choice_probs[best_choice_idx] / total_prob if total_prob > 0 else 0.0
 
     if best_choice_idx == len(definitions):  # NOTA slot
@@ -337,21 +344,61 @@ def _update_tokens_with_results(
 
 
 def _extract_entities(doc) -> list[Entity]:
-    """Extract linked entities from spaCy doc"""
+    """Extract linked entities from spaCy doc (empty when the entityLinker pipe is disabled)."""
     entities = []
-    if hasattr(doc._, 'linkedEntities'):
-        for ent in doc._.linkedEntities:
-            span = ent.get_span()
-            entity = Entity(
-                id=ent.identifier,
-                start_token=span.start,
-                end_token=span.end - 1,
-                text=ent.label,
-                description=ent.description,
-                url=ent.url
-            )
-            entities.append(entity)
+    for ent in getattr(doc._, "linkedEntities", None) or []:
+        span = ent.get_span()
+        entities.append(Entity(
+            id=ent.identifier,
+            start_token=span.start,
+            end_token=span.end - 1,
+            text=ent.label,
+            description=ent.description,
+            url=ent.url,
+        ))
     return entities
+
+
+def disambiguate_docs(docs: list, skip_single_sense: bool = False) -> list[WordSenseDisambiguation]:
+    """Disambiguate already-parsed spaCy docs together: one WordNet lookup and
+    one model batch for all content words of all docs (the batch path).
+
+    ``skip_single_sense`` assigns a word's only candidate sense directly
+    (confidence 1.0) instead of asking the model whether it is "none of the
+    above"; about a fifth of prompts in running text, so a real saving at scale.
+    """
+    per_doc = [_create_base_tokens(doc) for doc in docs]
+
+    # One definitions lookup for every content word of every doc.
+    queries = [
+        WordQuery(form=tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[tokens[i].pos])
+        for tokens, content_word_indices in per_doc
+        for i in content_word_indices
+    ]
+    all_definitions = iter(get_definitions(queries))
+
+    batch_data: list[DisambiguationInput] = []
+    doc_slices: list[tuple[list[int], int, int]] = []  # (valid token indices, start, end) into batch_data
+    for doc, (tokens, content_word_indices) in zip(docs, per_doc, strict=True):
+        doc_definitions = [next(all_definitions) for _ in content_word_indices]
+        if skip_single_sense:
+            for i, definitions in zip(content_word_indices, doc_definitions, strict=True):
+                if len(definitions) == 1:
+                    tokens[i].synset_id = definitions[0].synset_id
+                    tokens[i].synset_definition = definitions[0].definition
+                    tokens[i].confidence = 1.0
+            doc_definitions = [[] if len(d) == 1 else d for d in doc_definitions]
+        doc_batch, valid_indices = _prepare_disambiguation_batch(doc, tokens, content_word_indices, doc_definitions)
+        doc_slices.append((valid_indices, len(batch_data), len(batch_data) + len(doc_batch)))
+        batch_data.extend(doc_batch)
+
+    predictions = disambiguate_word_batch(batch_data)
+
+    results = []
+    for doc, (tokens, _), (valid_indices, start, end) in zip(docs, per_doc, doc_slices, strict=True):
+        _update_tokens_with_results(tokens, valid_indices, predictions[start:end])
+        results.append(WordSenseDisambiguation(tokens=tokens, entities=_extract_entities(doc)))
+    return results
 
 
 def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
@@ -359,30 +406,4 @@ def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
     # import graph so training and benchmarks run in environments without it.
     from wsd.spacy_utils import run_spacy_pipeline
 
-    doc = run_spacy_pipeline(text, language)
-
-    # First pass: Create all base tokens and identify content words to disambiguate
-    tokens, content_word_indices = _create_base_tokens(doc)
-
-    # Batch fetch definitions for all content words
-    if content_word_indices:
-        queries = [
-            WordQuery(form=tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[tokens[i].pos])
-            for i in content_word_indices
-        ]
-        all_definitions = get_definitions(queries, language)
-
-        # Prepare batch data for disambiguation
-        batch_data, valid_indices = _prepare_disambiguation_batch(
-            doc, tokens, content_word_indices, all_definitions
-        )
-
-        # Batch disambiguate all content words with definitions
-        if batch_data:
-            predictions = disambiguate_word_batch(batch_data)
-            _update_tokens_with_results(tokens, valid_indices, predictions)
-
-    # Extract linked entities using entityLinker
-    entities = _extract_entities(doc)
-
-    return WordSenseDisambiguation(tokens=tokens, entities=entities)
+    return disambiguate_docs([run_spacy_pipeline(text, language)])[0]
