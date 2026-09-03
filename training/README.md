@@ -48,10 +48,28 @@ tar -I "xz -9e" -cvf generated.tar.xz generated/
 - `--semcor PREFIX --sense-index dict/index.sense`: adds a sense-annotated corpus in Raganato et al. (2017)
   XML format, e.g. SemCor (222k instances) from http://lcl.uniroma1.it/wsdeval/ ; sense keys are mapped to
   `omw-en` ids through WordNet 3.0's `index.sense`.
+- `--wngt glosstag/ [--wngt-parts def,ex] [--wngt-tags man,auto]`: adds the Princeton WordNet Gloss Corpus
+  (https://wordnetcode.princeton.edu/glosstag-files/WordNet-3.0-glosstag.tar.bz2, 409k tagged words in
+  definitions and example sentences). Example sentences of held-out synsets are skipped.
 
 Adjective (`a`) and satellite-adjective (`s`) senses are one option set, as at inference. Weights are kept in
 fp32 with bf16 autocast (pure-bf16 weights round away most updates at lr 3e-5). Flash attention 2 is used
 when installed.
+
+## Recommended recipe (2026-09)
+
+The best model on real text (SemEval ALL 80.7%, WordNet held-out 78.6%) was trained with:
+
+```shell
+python -m training.train --wn-train \
+  --semcor WSD_Evaluation_Framework/Training_Corpora/SemCor/semcor --sense-index dict/index.sense \
+  --wngt WordNet-3.0/glosstag --wngt-tags man \
+  --lr-scheduler cosine --label-smoothing 0.1 --weight-decay 0.01 --learning-rate 3e-5 --num-epochs 2
+```
+
+Do not train longer on the generated data alone: it lifts WordNet-example accuracy while real-text accuracy
+collapses (see wsd/README.md). Evaluate every candidate on both `python -m wsd.benchmark --split eval` and
+`--raganato .../ALL/ALL`.
 
 ## Sweeps on a Slurm node
 
