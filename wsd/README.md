@@ -23,29 +23,21 @@ If this needs to be done in production, a word-vector search approach would be m
 For the sentence:
 > The bass player adjusted the bass on his amplifier while fishing for bass.
 
-For each content word, we generate a prompt, such as:
+For each content word, we generate a prompt: the sentence with the word marked, one WordNet definition per
+option letter, a fixed "none of the above" letter, and the answer slot:
 
 ```txt
-Instruction: 
-Disambiguate the meaning of the highlighted word based on its usage in the sentence. 
-Choose the most appropriate sense from the list.
-
-Sentence: The *bass* player adjusted the bass on his amplifier while fishing for bass .
-
-Question:
-Which sense best matches the meaning of the bolded word as used in this sentence?
-
-Choices:
-- A: the lowest part of the musical range
-- B: the lowest part in polyphonic music
-- C: an adult male singer with the lowest voice
-- D: the lean flesh of a saltwater fish of the family Serranidae
-- E: any of various North American freshwater fish with lean flesh (especially of the genus Micropterus)
-- F: the lowest adult male singing voice
-- G: the member with the lowest range of a family of musical instruments
-- H: nontechnical name for any of numerous edible marine and freshwater spiny-finned fishes
-
-Answer: [unused0] [MASK]
+The *bass* player adjusted the bass on his amplifier while fishing for bass.
+A. the lowest part of the musical range
+B. the lowest part in polyphonic music
+C. an adult male singer with the lowest voice
+D. the lean flesh of a saltwater fish of the family Serranidae
+E. any of various North American freshwater fish with lean flesh (especially of the genus Micropterus)
+F. the lowest adult male singing voice
+G. the member with the lowest range of a family of musical instruments
+H. nontechnical name for any of numerous edible marine and freshwater spiny-finned fishes
+а. none of the above
+[unused0] [MASK]
 ```
 
 The results show reasonable word sense disambiguation:
@@ -115,8 +107,8 @@ never trained on). Trained on 8xH100 via `training/sweep.py`; configs in `traini
 | generated data only, 3 epochs                                          | 75-76%      | 40-45%      |
 | + WordNet sentences + SemCor (space-tokenized), 2 epochs (S5)          | 78.1%       | 68.0%       |
 | + WordNet sentences + SemCor (detokenized), 2 epochs (R5)              | 77.8%       | 80.4%       |
-| **+ WordNet Gloss Corpus, manual tags, 2 epochs (W4)**                 | **78.6%**   | **80.7%**   |
-| same with the compact prompt template, lr 2e-5 (C3; +20% throughput)  | 78.3%       | 80.6%       |
+| + WordNet Gloss Corpus, manual tags, 2 epochs (W4)                     | 78.6%       | 80.7%       |
+| **same with the compact prompt template, lr 2e-5 (C3; +20% throughput; published)** | **78.3%** | **80.6%** |
 | + WordNet Gloss Corpus, definitions only (W3) / all tags (W1)          | 78.1%       | 80.9% / 80.4% |
 | same, 3 epochs (R1)                                                    | 77.8%       | 79.7%       |
 | same, 4 epochs, lr 2e-5 (R4)                                           | 77.8%       | 78.9%       |
@@ -149,7 +141,7 @@ one process per GPU, steady state per H100 80GB. spaCy `en_core_web_trf` runs on
 | + memoized API lookups, 16 tokenizer threads, spaCy in its own process | 125          | output identical; entity linking on    |
 | + tokenize/pad the next slice while the GPU runs (vectorized pad), CUDA MPS, 2 persistent spaCy workers per GPU | 160-195 | output identical |
 | + 2,048 sentences per batch (model calls span several tokenization slices) | **175-230** | output identical |
-| same pipeline with the compact-prompt model (Hub revision `compact`)     | 205-265     | 78.3% / 80.6% vs 78.6% / 80.7% |
+| + compact prompt template (retrained model, now `main` on the Hub)     | 205-265     | 78.3% / 80.6% vs 78.6% / 80.7% |
 | `--skip-single-sense`                                           | ~+20% (est.)        | 1-sense words assigned directly (20% of prompts) |
 
 A billion sentences at ~1,600 sentences/s per 8-GPU node is roughly 7 node-days.
@@ -172,11 +164,11 @@ gains nothing (GIL), a separate process does; the BPE tokenizer's default 224 ra
 (185 CPU-s for a 0.9 s call), 16 threads are 4x faster. Remaining levers: flash-attention in the serve image
 (needs a CUDA toolkit to build; at 1.6% padding and 10% attention time it has little to gain), static-shape
 compilation with widths bucketed to 64 (3.1k vs 3.6k prompts/s), CUDA graphs (compile did not finish in 45 min),
-chunk 512 (2.96k). The compact prompt template (`--prompt-style compact`, 16% fewer tokens) was then trained (C3 = W4 recipe, lr 2e-5):
-78.3% held-out / 80.6% ALL, i.e. within noise of W4, at 4,326 vs 3,614 prompts/s (+20%). It is published as Hub
-revision `compact` of `sign/ModernBERT-Large-Instruct-WSD`; `load_model` reads `prompt_style` from the checkpoint
-config, so switching is `WSD_MODEL` plus a client that has this code. Remaining lever: ModernBERT-base (~2.5x
-cheaper, -3 points).
+chunk 512 (2.96k). The prompt template was then shortened (no question line, no labels; 16% fewer tokens) and the model retrained
+with it (C3 = W4 recipe, lr 2e-5): 78.3% held-out / 80.6% ALL, i.e. within noise of W4, at 4,326 vs 3,614
+prompts/s (+20%). This is the only template in the code and the published `main` model is trained with it; the
+earlier template and models are not compatible with each other. Remaining lever: ModernBERT-base (~2.5x cheaper,
+-3 points).
 
 ## More Examples
 

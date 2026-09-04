@@ -7,7 +7,6 @@ import numpy as np
 import torch
 from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
-from wsd import prompt
 from wsd.letters import LetterSet, build_letters
 from wsd.model import WSDModernBertForMaskedLM
 from wsd.model_surgery import prune_decoder
@@ -90,7 +89,6 @@ def load_model(model_name: str | None = None) -> ModelComponents:
     if model.decoder.out_features != len(letter_set.letters):
         letter_set = prune_decoder(model, tokenizer)
     model.eval()
-    prompt.PROMPT_STYLE = getattr(model.config, "prompt_style", "full")
     # torch.compile of the encoder: ~1.5x on H100 batch inference, at the cost
     # of ~50s compile per process (needs a C compiler for triton). Off by
     # default for the latency-sensitive server; wsd.batch turns it on.

@@ -7,14 +7,6 @@ from wsd.letters import NOTA_LETTER_INDEX, build_letters
 
 NONE_OF_THE_ABOVE = "none of the above"
 
-# Prompt layout the model was trained with. "full" is the original wording;
-# "compact" drops the question line, labels and blank lines (~14% fewer tokens,
-# so ~14% faster inference) and is what newer checkpoints are trained on. The
-# checkpoint's config records it (``prompt_style``) and ``load_model`` sets this
-# process-wide default from it, so callers never pass it explicitly.
-PROMPT_STYLES = ("full", "compact")
-PROMPT_STYLE = "full"
-
 
 class WordNotFoundError(ValueError):
     """Raised when *word* cannot be found in *sentence* with word boundaries."""
@@ -115,12 +107,7 @@ def create_multiple_choice_prompt(word: str,
     none_letter = letters[NOTA_LETTER_INDEX]
     choices.append(f"{none_letter}. {NONE_OF_THE_ABOVE}")
     choices_lines = "\n".join(choices)
-    if PROMPT_STYLE == "compact":
-        return f"{marked_sentence}\n{choices_lines}\n[unused0] {mask_token}"
-    return f"""What is the meaning of *{word}* in this sentence?
-
-Sentence: {marked_sentence}
-
-{choices_lines}
-
-Answer: [unused0] {mask_token}"""
+    # Compact layout: the marked sentence, one option per line, the answer slot.
+    # (The earlier wording with a question line and labels cost ~16% more tokens
+    # for the same accuracy; models before 2026-09 were trained with it.)
+    return f"{marked_sentence}\n{choices_lines}\n[unused0] {mask_token}"

@@ -29,7 +29,6 @@ from transformers import (
 
 from training.wn_data import WordNetExample
 from training.wn_data import split as split_wn_examples
-from wsd import prompt
 from wsd.letters import NOTA_LETTER_INDEX, LetterSet, build_letters
 from wsd.masked_language_model import attn_implementation
 from wsd.model import WSDModernBertForMaskedLM
@@ -83,7 +82,6 @@ class TrainingConfig:
     weight_decay: float = DEFAULT_WEIGHT_DECAY
     label_smoothing: float = DEFAULT_LABEL_SMOOTHING
     lr_scheduler: str = DEFAULT_LR_SCHEDULER
-    prompt_style: str = "full"  # see wsd.prompt.PROMPT_STYLES; recorded in the checkpoint config
 
 
 @dataclass
@@ -496,8 +494,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Label smoothing applied in the model loss")
     parser.add_argument("--lr-scheduler", type=str, default=DEFAULT_LR_SCHEDULER,
                         help="HuggingFace LR scheduler type (e.g. linear, cosine, cosine_with_restarts)")
-    parser.add_argument("--prompt-style", choices=prompt.PROMPT_STYLES, default="full",
-                        help="Prompt layout to train (and, via the saved config, to infer) with")
     parser.add_argument("--nodes", type=int, help=argparse.SUPPRESS)  # appended by run_distributed.py
     return parser.parse_args(argv)
 
@@ -527,10 +523,8 @@ def main(argv: list[str] | None = None):
         weight_decay=args.weight_decay,
         label_smoothing=args.label_smoothing,
         lr_scheduler=args.lr_scheduler,
-        prompt_style=args.prompt_style,
     )
     os.environ.setdefault("WANDB_PROJECT", "modernbert-wsd-training")
-    prompt.PROMPT_STYLE = config.prompt_style
 
     # Set random seeds for reproducibility
     random.seed(config.random_seed)
@@ -553,7 +547,6 @@ def main(argv: list[str] | None = None):
     # Inference uses a parallel path via ``prediction_positions`` in model.py.
     model.sparse_prediction = True
     model.config.label_smoothing = config.label_smoothing  # applied in WSDModernBertForMaskedLM.forward
-    model.config.prompt_style = config.prompt_style  # inference reads the layout from the checkpoint
 
     # If we loaded a pristine checkpoint the decoder is still full-vocab; prune
     # it down to the 128 answer-letter rows. When resuming from a previously
