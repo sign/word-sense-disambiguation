@@ -149,6 +149,7 @@ one process per GPU, steady state per H100 80GB. spaCy `en_core_web_trf` runs on
 | + memoized API lookups, 16 tokenizer threads, spaCy in its own process | 125          | output identical; entity linking on    |
 | + tokenize/pad the next slice while the GPU runs (vectorized pad), CUDA MPS, 2 persistent spaCy workers per GPU | 160-195 | output identical |
 | + 2,048 sentences per batch (model calls span several tokenization slices) | **175-230** | output identical |
+| same pipeline with the compact-prompt model (Hub revision `compact`)     | 205-265     | 78.3% / 80.6% vs 78.6% / 80.7% |
 | `--skip-single-sense`                                           | ~+20% (est.)        | 1-sense words assigned directly (20% of prompts) |
 
 A billion sentences at ~1,600 sentences/s per 8-GPU node is roughly 7 node-days.
