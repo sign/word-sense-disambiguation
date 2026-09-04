@@ -1,6 +1,6 @@
 """Offline disambiguation of a sentence corpus: one input line -> one JSON line.
 
-    python -m wsd.batch --input 'corpus/*.txt' --output-dir out/ [--batch-size 512] [--no-entities]
+    python -m wsd.batch --input 'corpus/*.txt' --output-dir out/ [--batch-size 2048] [--no-entities]
 
 Input files hold one sentence per line. Output ``<output-dir>/<name>.jsonl``
 lines have the same schema as the server's JSON response. Under torchrun each
@@ -54,7 +54,25 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 # 16 threads take 0.22 s. Must be set before `tokenizers` initializes (i.e. before transformers is imported).
 os.environ.setdefault("RAYON_NUM_THREADS", "16")
 
+from wsd import word_sense_disambiguation  # noqa: E402
 from wsd.word_sense_disambiguation import disambiguate_docs, light_doc  # noqa: E402
+
+# Time spent inside the model call, to split the WSD stage into model vs host work in the per-file log.
+# Patched where it is looked up (word_sense_disambiguation imported the name).
+_model_seconds = 0.0
+_unmask = word_sense_disambiguation.unmask_token_batch
+
+
+def _timed_unmask(texts):
+    global _model_seconds
+    t0 = time.time()
+    try:
+        return _unmask(texts)
+    finally:
+        _model_seconds += time.time() - t0
+
+
+word_sense_disambiguation.unmask_token_batch = _timed_unmask
 
 
 def _read_batches(src, batch_size: int):
@@ -78,6 +96,9 @@ def _spacy_worker(paths: list[str], batch_size: int, entities: bool, queue: mp.Q
     which keeps the output in input order. Workers live for all of a rank's
     files: loading the pipeline costs ~15 s, too much to pay per file.
     """
+    # Under MPS, confine this client to a share of the SMs: spaCy's ~50k tiny kernels per 3k sentences otherwise
+    # take the whole GPU in turns with the model. Must be set before the CUDA context is created.
+    os.environ.setdefault("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", os.environ.get("WSD_SPACY_SM_PERCENT", "25"))
     from wsd.spacy_utils import run_spacy_pipe
 
     for path in paths:
@@ -127,9 +148,11 @@ class SpacyPool:
 
 def process_file(path: Path, out_path: Path, pool: SpacyPool, skip_single_sense: bool, log) -> tuple[int, int]:
     """Disambiguate one file (whose batches the pool is producing next); returns ``(sentences, prompts)``."""
+    global _model_seconds
     tmp = out_path.with_suffix(".jsonl.tmp")
     n_sentences = 0
     t_spacy = t_wsd = 0.0
+    _model_seconds = 0.0
     start = time.time()
 
     def write(texts, results, out):
@@ -155,7 +178,8 @@ def process_file(path: Path, out_path: Path, pool: SpacyPool, skip_single_sense:
     os.replace(tmp, out_path)
     elapsed = time.time() - start
     log(f"{path.name}: {n_sentences} sentences, {n_prompts} prompts in {elapsed:.0f}s "
-        f"({n_sentences / max(elapsed, 1e-9):.0f} sent/s; spacy {t_spacy:.0f}s summed over workers, wsd {t_wsd:.0f}s)")
+        f"({n_sentences / max(elapsed, 1e-9):.0f} sent/s; spacy {t_spacy:.0f}s summed over workers, "
+        f"wsd {t_wsd:.0f}s of which model {_model_seconds:.0f}s)")
     return n_sentences, n_prompts
 
 
@@ -163,7 +187,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", required=True, help="glob of input text files (one sentence per line)")
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--batch-size", type=int, default=512, help="sentences per spaCy/model batch")
+    parser.add_argument("--batch-size", type=int, default=2048,
+                        help="sentences per spaCy/model batch (>= 2048 keeps each model call above one slice)")
     parser.add_argument("--no-entities", action="store_true", help="skip the (CPU-bound) entity linker")
     parser.add_argument("--spacy-workers", type=int, default=2,
                         help="spaCy processes per GPU (spaCy is mostly CPU-bound; 2 keeps up with the model)")

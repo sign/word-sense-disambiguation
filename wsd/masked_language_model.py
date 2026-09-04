@@ -240,8 +240,10 @@ def _launch_chunk(
     device sync; the caller synchronizes the stream when it collects results.
     """
     with torch.cuda.stream(stream), torch.no_grad():
-        inputs = {k: v.pin_memory().to(components.device, non_blocking=True) for k, v in cpu_inputs.items()}
-        positions = positions_cpu.pin_memory().to(components.device, non_blocking=True)
+        # Plain copies: pinning per chunk (cudaHostRegister) takes a driver-wide
+        # lock and serializes the 8 processes sharing a node.
+        inputs = {k: v.to(components.device) for k, v in cpu_inputs.items()}
+        positions = positions_cpu.to(components.device)
         return components.model(**inputs, prediction_positions=positions).logits
 
 

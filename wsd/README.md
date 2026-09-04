@@ -147,10 +147,11 @@ one process per GPU, steady state per H100 80GB. spaCy `en_core_web_trf` runs on
 | + `WSD_COMPILE=1` (torch.compile, default in `wsd.batch`)       | 75                  | one-time ~60s compile per process                |
 | definitions via the WordNet API instead of the local file       | 60                  | ~0.35 ms of server work per query                |
 | + memoized API lookups, 16 tokenizer threads, spaCy in its own process | 125          | output identical; entity linking on    |
-| + tokenize/pad the next slice while the GPU runs (vectorized pad), CUDA MPS, 2 persistent spaCy workers per GPU | **160-195** | output identical |
+| + tokenize/pad the next slice while the GPU runs (vectorized pad), CUDA MPS, 2 persistent spaCy workers per GPU | 160-195 | output identical |
+| + 2,048 sentences per batch (model calls span several tokenization slices) | **175-230** | output identical |
 | `--skip-single-sense`                                           | ~+20% (est.)        | 1-sense words assigned directly (20% of prompts) |
 
-A billion sentences at ~1,400 sentences/s per 8-GPU node is roughly 8 node-days.
+A billion sentences at ~1,600 sentences/s per 8-GPU node is roughly 7 node-days.
 
 Where the forward pass stands (one H100, 32.6k real prompts, `torch.profiler` + `nvidia-smi dmon`): the model with
 pre-padded inputs runs at 4,100 prompts/s at 99% SM utilization, so the kernels (GEMM ~55%, compile-fused
