@@ -163,6 +163,9 @@ in Python per chunk, and tokenization done before any GPU work. `unmask_token_ba
 process on the same GPU costs the model 16%; CUDA MPS (`wsd.batch` starts it) cuts that to 8%, and two
 persistent spaCy workers per GPU keep spaCy from pacing the pipeline.
 
+Also measured: spaCy's transformer in mixed precision (`WSD_SPACY_MIXED_PRECISION=1`, opt-in) makes spaCy ~20% faster but
+leaves the model's throughput unchanged next to it (3,342 vs 3,311 prompts/s), so it stays off.
+
 What did not work:
 fp8 dynamic quantization (torchao) is +16% speed for a collapse to 67% on SemEval; a spaCy prefetch *thread*
 gains nothing (GIL), a separate process does; the BPE tokenizer's default 224 rayon threads contend on a lock
