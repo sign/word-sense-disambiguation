@@ -144,11 +144,16 @@ one process per GPU, steady state per H100 80GB. spaCy `en_core_web_trf` runs on
 | Original code (`WSD_CHUNK_SIZE=512`)                            | 27                  | WordNet sqlite over NFS dominated (6 ms/lookup)  |
 | + local `wn.db` copy, tokenize once, CPU probabilities          | 55                  |                                                  |
 | + `WSD_COMPILE=1` (torch.compile, default in `wsd.batch`)       | 75                  | one-time ~60s compile per process                |
-| + `--no-entities --skip-single-sense`                           | 85                  | no entity linking; 1-sense words assigned directly |
+| definitions via the WordNet API instead of the local file       | 60                  | ~0.35 ms of server work per query                |
+| + memoized API lookups, 16 tokenizer threads, spaCy in its own process | **125** | output identical; entity linking on    |
+| `--skip-single-sense`                                           | ~140 (est.)         | 1-sense words assigned directly (20% of prompts) |
 
-A billion sentences at ~600 sentences/s per 8-GPU node is roughly 19 node-days. Remaining levers, in order:
-a smaller model (ModernBERT-base is ~2.5x cheaper per prompt), flash-attention in the serve image, a
-shorter prompt template (needs retraining).
+A billion sentences at ~1,000 sentences/s per 8-GPU node is roughly 12 node-days. What did not work:
+fp8 dynamic quantization (torchao) is +16% speed for a collapse to 67% on SemEval; a spaCy prefetch *thread*
+gains nothing (GIL), a separate process does; the BPE tokenizer's default 224 rayon threads contend on a lock
+(185 CPU-s for a 0.9 s call), 16 threads are 4x faster. Remaining levers: flash-attention in the serve image
+(needs a CUDA toolkit to build), a shorter prompt template (needs retraining), ModernBERT-base (~2.5x cheaper,
+-3 points).
 
 ## More Examples
 

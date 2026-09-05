@@ -14,6 +14,7 @@ Per batch of sentences: spaCy (GPU) -> one WordNet lookup for all content words
 import argparse
 import glob
 import json
+import multiprocessing as mp
 import os
 import time
 from dataclasses import asdict
@@ -28,9 +29,11 @@ RANK, WORLD = detach_from_torchrun()
 os.environ.setdefault("WSD_CHUNK_SIZE", "256")
 os.environ.setdefault("WSD_COMPILE", "1")  # ~1.5x model throughput after a one-time compile
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
+# The BPE tokenizer's rayon pool contends on a shared cache: 224 threads burn 185 CPU-s for a 0.9 s call,
+# 16 threads take 0.22 s. Must be set before `tokenizers` initializes (i.e. before transformers is imported).
+os.environ.setdefault("RAYON_NUM_THREADS", "16")
 
-from wsd.spacy_utils import run_spacy_pipe  # noqa: E402
-from wsd.word_sense_disambiguation import disambiguate_docs  # noqa: E402
+from wsd.word_sense_disambiguation import disambiguate_docs, light_doc  # noqa: E402
 
 
 def _read_batches(src, batch_size: int):
@@ -43,20 +46,38 @@ def _read_batches(src, batch_size: int):
         yield texts
 
 
+def _spacy_worker(path: str, batch_size: int, entities: bool, queue: mp.Queue) -> None:
+    """Parse one file in batches and hand picklable docs to the model process.
+
+    Runs in its own process (spawned, so it gets its own CUDA/cupy context on the
+    same GPU): in one process spaCy and the model fight over the GIL and nothing
+    overlaps; as a separate process spaCy's ~20% is hidden behind the model.
+    """
+    from wsd.spacy_utils import run_spacy_pipe
+
+    with open(path) as src:
+        for texts in _read_batches(src, batch_size):
+            t0 = time.time()
+            docs = [light_doc(d) for d in run_spacy_pipe(texts, batch_size=batch_size, entities=entities)]
+            queue.put((texts, docs, time.time() - t0))
+    queue.put(None)
+
+
 def process_file(path: Path, out_path: Path, batch_size: int, entities: bool, skip_single_sense: bool,
                  log) -> tuple[int, int]:
     """Disambiguate one file; returns ``(sentences, prompts)``."""
-    # ponytail: spaCy and the model run back to back. Overlapping them on a
-    # second thread was measured at zero gain (GIL + shared GPU); a separate
-    # spaCy process per GPU would be the upgrade path if spaCy ever dominates.
     tmp = out_path.with_suffix(".jsonl.tmp")
     n_sentences = n_prompts = 0
     t_spacy = t_wsd = 0.0
     start = time.time()
-    with open(path) as src, open(tmp, "w") as out:
-        for texts in _read_batches(src, batch_size):
-            t0 = time.time()
-            docs = run_spacy_pipe(texts, batch_size=batch_size, entities=entities)
+    queue: mp.Queue = mp.get_context("spawn").Queue(maxsize=2)
+    worker = mp.get_context("spawn").Process(
+        target=_spacy_worker, args=(str(path), batch_size, entities, queue), daemon=True,
+    )
+    worker.start()
+    with open(tmp, "w") as out:
+        while (item := queue.get()) is not None:
+            texts, docs, dt_spacy = item
             t1 = time.time()
             results = disambiguate_docs(docs, skip_single_sense=skip_single_sense)
             t2 = time.time()
@@ -64,12 +85,13 @@ def process_file(path: Path, out_path: Path, batch_size: int, entities: bool, sk
                 n_prompts += sum(tok.confidence is not None for tok in result.tokens)
                 out.write(json.dumps({"text": text, **asdict(result)}) + "\n")
             n_sentences += len(texts)
-            t_spacy += t1 - t0
+            t_spacy += dt_spacy
             t_wsd += t2 - t1
+    worker.join()
     os.replace(tmp, out_path)
     elapsed = time.time() - start
     log(f"{path.name}: {n_sentences} sentences, {n_prompts} prompts in {elapsed:.0f}s "
-        f"({n_sentences / max(elapsed, 1e-9):.0f} sent/s; spacy {t_spacy:.0f}s, wsd {t_wsd:.0f}s)")
+        f"({n_sentences / max(elapsed, 1e-9):.0f} sent/s; spacy {t_spacy:.0f}s (overlapped), wsd {t_wsd:.0f}s)")
     return n_sentences, n_prompts
 
 
