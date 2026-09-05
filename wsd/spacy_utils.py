@@ -2,6 +2,7 @@
 serve-on-CPU-then-swap-to-GPU warmup used by the web server."""
 import asyncio
 import logging
+import os
 import threading
 
 import spacy
@@ -26,7 +27,11 @@ def _load_pipeline(language: str) -> spacy.language.Language:
     if language not in _PIPELINE_MODELS:
         msg = f"Language '{language}' not supported"
         raise ValueError(msg)
-    nlp = spacy.load(_PIPELINE_MODELS[language])
+    config = {}
+    if os.environ.get("WSD_SPACY_MIXED_PRECISION") == "1":
+        # fp16 transformer: smaller GPU footprint next to the WSD model (opt-in; may flip rare tags)
+        config = {"components": {"transformer": {"model": {"mixed_precision": True}}}}
+    nlp = spacy.load(_PIPELINE_MODELS[language], config=config)
     nlp.add_pipe("entityLinker", last=True)
     return nlp
 

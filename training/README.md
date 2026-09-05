@@ -190,10 +190,7 @@ Sentence: The vivid mural was designed to instill awe in anyone who passed by.
 Correct answer: G
 
 Prompt:
-What is the meaning of *instill* in this sentence?
-
-Sentence: The vivid mural was designed to *instill* awe in anyone who passed by.
-
+The vivid mural was designed to *instill* awe in anyone who passed by.
 A. enter drop by drop
 B. to create a strong, lasting impression in someone's mind
 C. to repeatedly teach or remind someone so that they internalize a lesson
@@ -205,8 +202,7 @@ H. impart gradually
 I. to saturate or permeate something with a particular characteristic
 J. to seep into something in tiny droplets
 K. none of the above
-
-Answer: [unused0] [MASK]
+[unused0] [MASK]
 ================================================================================
 
 Training metrics:
@@ -285,14 +281,10 @@ The training script is organized into modular functions:
 ### Prompt Format
 Prompts are created using `wsd.prompt.create_multiple_choice_prompt()` which formats questions as:
 ```
-What is the meaning of *word* in this sentence?
-
-Sentence: The *word* appears in context.
-
+The *word* appears in context.
 A. definition 1
 B. definition 2
 ...
 Z. none of the above
-
-Answer: [unused0] [MASK]
+[unused0] [MASK]
 ```
