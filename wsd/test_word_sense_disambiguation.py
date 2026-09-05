@@ -4,6 +4,7 @@ import torch
 
 from wsd.env import WORDNET_URL
 from wsd.masked_language_model import load_model
+from wsd.prompt import create_marked_sentence
 from wsd.word_sense_disambiguation import (
     NO_DEFINITIONS_FOUND,
     NONE_OF_THE_ABOVE,
@@ -11,7 +12,6 @@ from wsd.word_sense_disambiguation import (
     DisambiguationInput,
     DisambiguationResult,
     WordQuery,
-    create_marked_sentence,
     create_multiple_choice_prompt,
     disambiguate_word,
     disambiguate_word_batch,

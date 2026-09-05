@@ -57,6 +57,10 @@ python -m wsd.batch --input 'shards/part-*' --output-dir out/ [--no-entities] [-
 
 See [wsd/README.md](./wsd/README.md#throughput) for measured throughput.
 
+Multiword expressions that WordNet lists (`test tube`, `New York`, `give up`) are disambiguated as one unit
+first; each of their tokens carries the shared synset and the `expression` it belongs to. Only when the
+model answers "none of the above" for the expression are its words disambiguated individually.
+
 ## Usage
 
 To view an output, visit this [example link](http://localhost:8005/disambiguate?text=Obama%20told%20the%20bus%20driver,%20to%20drive%20to%20D.C.&lang=en&output=html) (adjust port if running locally):

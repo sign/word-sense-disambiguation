@@ -7,10 +7,10 @@ import requests
 from wsd.env import WORDNET_URL
 from wsd.letters import NOTA_LETTER_INDEX
 from wsd.masked_language_model import load_model, unmask_token_batch
+from wsd.multiword import MultiwordSpan, find_spans
 from wsd.prompt import (
     NONE_OF_THE_ABOVE,
     Definition,
-    create_marked_sentence,
     create_multiple_choice_prompt,
 )
 
@@ -50,6 +50,9 @@ class DisambiguatedToken:
     synset_id: str | None = None
     synset_definition: str | None = None
     confidence: float | None = None
+    # WordNet multiword form this token is part of ("test tube"); the sense fields then
+    # describe the whole expression and are repeated on each of its tokens.
+    expression: str | None = None
 
 
 @dataclass
@@ -106,6 +109,9 @@ class LightDoc:
 
     def __iter__(self):
         return iter(self.tokens)
+
+    def __getitem__(self, i):
+        return self.tokens[i]
 
 
 def light_doc(doc) -> LightDoc:
@@ -324,6 +330,10 @@ _SPACY_TO_WORDNET_POS: dict[str, str] = {
 }
 
 
+def _is_content(token) -> bool:
+    return token.pos_ in _SPACY_TO_WORDNET_POS and not token.is_punct and not token.is_space
+
+
 def _create_base_tokens(doc) -> tuple[list[DisambiguatedToken], list[int]]:
     """Create base tokens and identify content word indices"""
     tokens = []
@@ -342,49 +352,23 @@ def _create_base_tokens(doc) -> tuple[list[DisambiguatedToken], list[int]]:
         tokens.append(disambiguated_token)
 
         # Track content words that need disambiguation
-        if token.pos_ in _SPACY_TO_WORDNET_POS and not token.is_punct and not token.is_space:
+        if _is_content(token):
             content_word_indices.append(token.i)
 
     return tokens, content_word_indices
 
 
-def _prepare_disambiguation_batch(
-    doc,
-    tokens: list[DisambiguatedToken],
-    content_word_indices: list[int],
-    all_definitions: list[list[Definition]]
-) -> tuple[list[DisambiguationInput], list[int]]:
-    """Prepare batch data for disambiguation"""
-    batch_data = []
-    valid_indices = []
-
-    for idx, definitions in zip(content_word_indices, all_definitions, strict=True):
-        if definitions:
-            marked_sentence = create_marked_sentence(doc, idx)
-            batch_data.append(
-                DisambiguationInput(
-                    word=tokens[idx].word,
-                    marked_sentence=marked_sentence,
-                    definitions=definitions
-                )
-            )
-            valid_indices.append(idx)
-
-    return batch_data, valid_indices
-
-
-def _update_tokens_with_results(
-    tokens: list[DisambiguatedToken],
-    valid_indices: list[int],
-    predictions: list[DisambiguationResult]
-) -> None:
-    """Update tokens with disambiguation results"""
-    for token_idx, result in zip(valid_indices, predictions, strict=True):
-        tokens[token_idx].confidence = result.confidence
-        # NOTA → leave synset_id/synset_definition at their dataclass defaults (None).
-        if result.definition != NONE_OF_THE_ABOVE:
-            tokens[token_idx].synset_id = result.synset_id
-            tokens[token_idx].synset_definition = result.definition
+def _mark_span(doc, start: int, end: int) -> str:
+    """Sentence text with tokens ``start:end`` wrapped in one ``*...*`` pair."""
+    text = ""
+    for token in doc:
+        if token.i == start:
+            text += "*"
+        text += token.text
+        if token.i == end - 1:
+            text += "*"
+        text += token.whitespace_
+    return text
 
 
 def _extract_entities(doc) -> list[Entity]:
@@ -405,45 +389,95 @@ def _extract_entities(doc) -> list[Entity]:
     return entities
 
 
+def _span_pos(doc, span: MultiwordSpan) -> str:
+    return _SPACY_TO_WORDNET_POS.get(doc[span.head].pos_, "n")
+
+
+# (doc index, token range [a, b), multiword form or None, candidate definitions)
+_Unit = tuple[int, tuple[int, int], str | None, list[Definition]]
+
+
+def _units(docs, per_doc, spans_per_doc) -> tuple[list[_Unit], list[tuple[int, int]]]:
+    """Phase-1 units: every WordNet multiword span plus the content words outside spans,
+    with their definitions fetched in one lookup. Spans whose form has no definitions
+    for the chosen POS are returned as word-level fallbacks instead."""
+    queries: list[WordQuery] = []
+    ranges: list[tuple[int, tuple[int, int], str | None]] = []
+    for d, (doc, (tokens, content_idx), spans) in enumerate(zip(docs, per_doc, spans_per_doc, strict=True)):
+        covered: set[int] = set()
+        for span in spans:
+            queries.append(WordQuery(form=span.form, pos=_span_pos(doc, span)))
+            ranges.append((d, (span.start, span.end), span.form))
+            covered.update(range(span.start, span.end))
+        for i in content_idx:
+            if i not in covered:
+                queries.append(WordQuery(form=tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[tokens[i].pos]))
+                ranges.append((d, (i, i + 1), None))
+    units: list[_Unit] = []
+    fallback: list[tuple[int, int]] = []
+    for (d, (a, b), expression), defs in zip(ranges, get_definitions(queries), strict=True):
+        if defs:
+            units.append((d, (a, b), expression, defs))
+        elif expression is not None:
+            fallback.extend((d, i) for i in range(a, b) if _is_content(docs[d][i]))
+    return units, fallback
+
+
+def _run_units(docs, results, units: list[_Unit], skip_single_sense: bool) -> list[tuple[int, tuple[int, int]]]:
+    """Disambiguate units in one model batch, write the answers on their tokens, and
+    return the multiword units answered "none of the above"."""
+    batch: list[DisambiguationInput] = []
+    kept: list[_Unit] = []
+    for d, (a, b), expression, defs in units:
+        if skip_single_sense and len(defs) == 1:
+            for tok in results[d].tokens[a:b]:
+                tok.synset_id, tok.synset_definition = defs[0].synset_id, defs[0].definition
+                tok.confidence, tok.expression = 1.0, expression
+            continue
+        word = " ".join(t.text for t in docs[d][a:b])
+        batch.append(DisambiguationInput(word=word, marked_sentence=_mark_span(docs[d], a, b), definitions=defs))
+        kept.append((d, (a, b), expression, defs))
+    rejected = []
+    for (d, (a, b), expression, _), result in zip(kept, disambiguate_word_batch(batch), strict=True):
+        for tok in results[d].tokens[a:b]:
+            tok.confidence, tok.expression = result.confidence, expression
+            if result.definition != NONE_OF_THE_ABOVE:  # NOTA leaves synset fields None
+                tok.synset_id, tok.synset_definition = result.synset_id, result.definition
+        if result.definition == NONE_OF_THE_ABOVE and expression is not None:
+            rejected.append((d, (a, b)))
+    return rejected
+
+
 def disambiguate_docs(docs: list, skip_single_sense: bool = False) -> list[WordSenseDisambiguation]:
     """Disambiguate already-parsed spaCy docs together: one WordNet lookup and
     one model batch for all content words of all docs (the batch path).
 
-    ``skip_single_sense`` assigns a word's only candidate sense directly
-    (confidence 1.0) instead of asking the model whether it is "none of the
-    above"; about a fifth of prompts in running text, so a real saving at scale.
+    Multiword expressions that WordNet lists ("test tube", "give up") are
+    disambiguated as one unit first; their words are only disambiguated
+    separately (a second, small model batch) when the expression's answer is
+    "none of the above", i.e. when the compound reading does not apply.
+
+    ``skip_single_sense`` assigns a word's (or expression's) only candidate sense
+    directly (confidence 1.0) instead of asking the model whether it is "none of
+    the above"; about a fifth of prompts in running text, so a real saving at scale.
     """
     per_doc = [_create_base_tokens(doc) for doc in docs]
+    results = [WordSenseDisambiguation(tokens=tokens, entities=_extract_entities(doc))
+               for doc, (tokens, _) in zip(docs, per_doc, strict=True)]
+    units, fallback = _units(docs, per_doc, [find_spans(doc) for doc in docs])
 
-    # One definitions lookup for every content word of every doc.
-    queries = [
-        WordQuery(form=tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[tokens[i].pos])
-        for tokens, content_word_indices in per_doc
-        for i in content_word_indices
-    ]
-    all_definitions = iter(get_definitions(queries))
-
-    batch_data: list[DisambiguationInput] = []
-    doc_slices: list[tuple[list[int], int, int]] = []  # (valid token indices, start, end) into batch_data
-    for doc, (tokens, content_word_indices) in zip(docs, per_doc, strict=True):
-        doc_definitions = [next(all_definitions) for _ in content_word_indices]
-        if skip_single_sense:
-            for i, definitions in zip(content_word_indices, doc_definitions, strict=True):
-                if len(definitions) == 1:
-                    tokens[i].synset_id = definitions[0].synset_id
-                    tokens[i].synset_definition = definitions[0].definition
-                    tokens[i].confidence = 1.0
-            doc_definitions = [[] if len(d) == 1 else d for d in doc_definitions]
-        doc_batch, valid_indices = _prepare_disambiguation_batch(doc, tokens, content_word_indices, doc_definitions)
-        doc_slices.append((valid_indices, len(batch_data), len(batch_data) + len(doc_batch)))
-        batch_data.extend(doc_batch)
-
-    predictions = disambiguate_word_batch(batch_data)
-
-    results = []
-    for doc, (tokens, _), (valid_indices, start, end) in zip(docs, per_doc, doc_slices, strict=True):
-        _update_tokens_with_results(tokens, valid_indices, predictions[start:end])
-        results.append(WordSenseDisambiguation(tokens=tokens, entities=_extract_entities(doc)))
+    for d, (a, b) in _run_units(docs, results, units, skip_single_sense):  # rejected expressions
+        for i in range(a, b):
+            results[d].tokens[i].confidence = results[d].tokens[i].expression = None
+            if _is_content(docs[d][i]):
+                fallback.append((d, i))
+    if fallback:
+        word_defs = get_definitions([
+            WordQuery(form=results[d].tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[results[d].tokens[i].pos])
+            for d, i in fallback
+        ])
+        word_units = [(d, (i, i + 1), None, defs) for (d, i), defs in zip(fallback, word_defs, strict=True) if defs]
+        _run_units(docs, results, word_units, skip_single_sense)
     return results
 
 
