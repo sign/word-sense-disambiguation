@@ -14,11 +14,12 @@ DEFS = {
     ("dog", "n"): [Definition("dog", "a member of the genus Canis")],
     ("bark", "v"): [Definition("bark", "speak in an unfriendly tone")],
 }
-INDEX = {"test": {("test", "tube"): "test tube"}, "hot": {("hot", "dog"): "hot dog"}}
+INDEX = {"test": {("test", "tube"): "test tube"}, "hot": {("hot", "dog"): "hot dog"},
+         "give": {("give", "up"): "give up"}}
 
 
-def tok(i, text, lemma, pos, idx, ws=" "):
-    return LightToken(text, lemma, pos, i, idx, pos == "PUNCT", False, ws)
+def tok(i, text, lemma, pos, idx, ws=" ", dep="", head=-1):
+    return LightToken(text, lemma, pos, i, idx, pos == "PUNCT", False, ws, dep, head)
 
 
 TEST_TUBE = LightDoc([
@@ -51,6 +52,17 @@ def fake_model(monkeypatch):
 
 def test_find_spans_on_lemmas(fake_model):
     assert find_spans(HOT_DOGS) == [MultiwordSpan(start=1, end=3, form="hot dog", head=2)]
+
+
+def test_verb_spans_need_a_particle(fake_model):
+    particle = LightDoc([tok(0, "gave", "give", "VERB", 0), tok(1, "up", "up", "ADP", 5, "", "prt", 0)], [])
+    # "gave up the hill": "up" heads its own object, so "give up" is not the reading
+    preposition = LightDoc([
+        tok(0, "gave", "give", "VERB", 0), tok(1, "up", "up", "ADP", 5, " ", "prep", 0),
+        tok(2, "the", "the", "DET", 8, " ", "det", 3), tok(3, "hill", "hill", "NOUN", 12, "", "pobj", 1),
+    ], [])
+    assert find_spans(particle) == [MultiwordSpan(start=0, end=2, form="give up", head=0)]
+    assert find_spans(preposition) == []
 
 
 def test_span_first_then_word_fallback(fake_model):

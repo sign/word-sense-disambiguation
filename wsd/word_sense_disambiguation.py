@@ -98,6 +98,8 @@ class LightToken:
     is_punct: bool
     is_space: bool
     whitespace_: str
+    dep_: str = ""
+    head_i: int = -1  # index of the syntactic head (spaCy ``token.head.i``)
 
 
 @dataclass
@@ -117,7 +119,8 @@ class LightDoc:
 def light_doc(doc) -> LightDoc:
     return LightDoc(
         tokens=[
-            LightToken(t.text, t.lemma_, t.pos_, t.i, t.idx, t.is_punct, t.is_space, t.whitespace_) for t in doc
+            LightToken(t.text, t.lemma_, t.pos_, t.i, t.idx, t.is_punct, t.is_space, t.whitespace_, t.dep_, t.head.i)
+            for t in doc
         ],
         entities=_extract_entities(doc),
     )

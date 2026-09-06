@@ -62,12 +62,34 @@ def find_spans(doc, language: str = "en") -> list[MultiwordSpan]:
             i += 1
             continue
         n, form = match
-        # the head is the last content token (compounds are head-final; "give up" -> "give" is caught below)
-        head = i + n - 1
-        for j in range(i, i + n):
-            if tokens[j].pos_ == "VERB":
-                head = j
-                break
+        head = _head(tokens[i:i + n], i, tokens)
+        if head is None:
+            i += 1
+            continue
         spans.append(MultiwordSpan(start=i, end=i + n, form=form, head=head))
         i += n
     return spans
+
+
+def _head_index(token) -> int:
+    return token.head_i if hasattr(token, "head_i") else token.head.i
+
+
+def _head(span, start: int, tokens) -> int | None:
+    """Token index whose POS stands for the expression, or None when the match is spurious.
+
+    Compounds are head-final ("test tube" -> "tube"). A span containing a verb is a
+    verb-particle expression ("gave up", "take part") only when its other tokens depend
+    directly on that verb and head nothing outside the span; a preposition with its own
+    object ("go to the store", "live in hopes") is a phrase boundary, not a compound."""
+    verbs = [j for j, t in enumerate(span) if t.pos_ == "VERB"]
+    if not verbs:
+        return start + len(span) - 1
+    verb = start + verbs[0]
+    inside = range(start, start + len(span))
+    for j, t in enumerate(span):
+        if start + j == verb:
+            continue
+        if _head_index(t) != verb or any(_head_index(o) == start + j for k, o in enumerate(tokens) if k not in inside):
+            return None
+    return verb
