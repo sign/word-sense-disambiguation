@@ -20,11 +20,14 @@ import shutil
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
 from pathlib import Path
 
 from wsd.env import detach_from_torchrun
 
+
+def _to_dict(result) -> dict:
+    """Flat dataclasses -> dict; ``dataclasses.asdict`` recursion costs ~0.25 ms per sentence."""
+    return {"tokens": [vars(t) for t in result.tokens], "entities": [vars(e) for e in result.entities]}
 
 def _start_mps() -> None:
     """Start CUDA MPS for this node so the spaCy process and the model process on
@@ -159,7 +162,7 @@ def process_file(path: Path, out_path: Path, pool: SpacyPool, skip_single_sense:
         count = 0
         for text, result in zip(texts, results, strict=True):
             count += sum(tok.confidence is not None for tok in result.tokens)
-            out.write(json.dumps({"text": text, **asdict(result)}) + "\n")
+            out.write(json.dumps({"text": text, **_to_dict(result)}) + "\n")
         return count
 
     # JSON serialization of batch i runs on a writer thread while batch i+1 is

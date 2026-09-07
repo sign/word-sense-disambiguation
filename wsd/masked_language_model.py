@@ -52,7 +52,7 @@ class ModelComponents:
 class UnmaskResult:
     """Result of unmasking a single token"""
     token: str
-    probabilities: torch.Tensor
+    probabilities: list[float]  # one per answer letter; plain floats so callers never index a tensor
 
 
 @cache
@@ -217,14 +217,15 @@ def _logits_to_results(
 ) -> list[UnmaskResult]:
     """Turn ``(batch, answer_vocab)`` logits into per-example UnmaskResults.
 
-    Probabilities come back on the CPU in one copy per chunk; callers index
-    them per option, which on a GPU tensor would be one device sync each.
+    Probabilities come back as Python lists in one copy per chunk; callers index
+    them per option, which on a tensor costs a Python/C round trip each (and on a
+    GPU tensor a device sync).
     """
     probs = torch.softmax(logits.float(), dim=-1).cpu()
     compact_ids = torch.argmax(probs, dim=-1).tolist()
     return [
         UnmaskResult(token=letters[cid], probabilities=p)
-        for cid, p in zip(compact_ids, probs, strict=True)
+        for cid, p in zip(compact_ids, probs.tolist(), strict=True)  # one conversion per chunk
     ]
 
 

@@ -1,5 +1,4 @@
 import pytest
-import torch
 
 from wsd.masked_language_model import (
     PromptMaskError,
@@ -46,9 +45,9 @@ def test_unmask_token_returns_answer_letter():
     assert isinstance(result.token, str)
     assert result.token in components.letter_set.letters
 
-    assert isinstance(result.probabilities, torch.Tensor)
-    assert result.probabilities.shape[-1] == len(components.letter_set.letters)
-    assert result.probabilities.sum().item() == pytest.approx(1.0, abs=1e-4)
+    assert isinstance(result.probabilities, list)
+    assert len(result.probabilities) == len(components.letter_set.letters)
+    assert sum(result.probabilities) == pytest.approx(1.0, abs=1e-4)
 
 
 def test_no_mask_token_error():
@@ -69,7 +68,7 @@ def test_multiple_mask_tokens():
     # Should still work (uses first mask token)
     assert isinstance(result.token, str)
     assert len(result.token.strip()) > 0
-    assert isinstance(result.probabilities, torch.Tensor)
+    assert isinstance(result.probabilities, list)
 
 
 def test_unmask_token_batch_basic():
@@ -87,8 +86,8 @@ def test_unmask_token_batch_basic():
         assert isinstance(result, UnmaskResult)
         assert isinstance(result.token, str)
         assert result.token in components.letter_set.letters
-        assert result.probabilities.shape[-1] == len(components.letter_set.letters)
-        assert result.probabilities.sum().item() == pytest.approx(1.0, abs=1e-4)
+        assert len(result.probabilities) == len(components.letter_set.letters)
+        assert sum(result.probabilities) == pytest.approx(1.0, abs=1e-4)
 
 
 def test_unmask_token_batch_single_item():
