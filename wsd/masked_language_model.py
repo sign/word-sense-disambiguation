@@ -159,8 +159,7 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
         if any(tokenizer.mask_token_id not in ids for ids in encodings):
             raise PromptMaskError()
         order = sorted(range(len(encodings)), key=lambda i: len(encodings[i]))
-        for start in range(0, len(order), _BUCKET_CHUNK_SIZE):
-            local_idx = order[start : start + _BUCKET_CHUNK_SIZE]
+        for local_idx in _chunks(order):
             chunk_idx = [slice_start + i for i in local_idx]
             input_ids, attention_mask = _pad([encodings[i] for i in local_idx], tokenizer.pad_token_id)
             positions = _prediction_positions(input_ids, tokenizer.mask_token_id)
@@ -183,6 +182,16 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     # IndexError downstream rather than a clear failure here.
     assert all(r is not None for r in results), "unmask_token_batch left slots unfilled"
     return cast(list[UnmaskResult], results)
+
+
+def _chunks(order: list[int]) -> list[list[int]]:
+    """Split length-sorted indices into chunks of ``_BUCKET_CHUNK_SIZE``, never a chunk of one row:
+    a 1-row batch fails the compiled graph's "batch >= 2" guard and costs a 15-25 s recompile."""
+    starts = list(range(0, len(order), _BUCKET_CHUNK_SIZE))
+    if len(order) > 1 and len(order) - starts[-1] == 1:
+        starts.pop()  # fold the lone remainder into the previous chunk
+    chunks = [order[a:b] for a, b in zip(starts, starts[1:] + [len(order)], strict=True)]
+    return [c * 2 if len(c) == 1 else c for c in chunks]  # a single prompt runs twice instead
 
 
 def _pad(sequences: list[list[int]], pad_id: int) -> tuple[torch.Tensor, torch.Tensor]:
