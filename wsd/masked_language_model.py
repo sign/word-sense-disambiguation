@@ -152,7 +152,10 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     results: list[UnmaskResult | None] = [None] * len(texts)
     pending: list[tuple[list[int], torch.Tensor, torch.cuda.Stream]] = []
     for slice_start in range(0, len(texts), _SLICE_SIZE):
-        encodings = tokenizer(texts[slice_start:slice_start + _SLICE_SIZE])["input_ids"]
+        # the Rust batch encoder directly: the Python wrapper's per-encoding conversion
+        # (`_convert_encoding`) costs ~16 us per prompt, about as much as the encoding itself
+        chunk_texts = texts[slice_start:slice_start + _SLICE_SIZE]
+        encodings = [e.ids for e in tokenizer.backend_tokenizer.encode_batch(chunk_texts)]
         if any(tokenizer.mask_token_id not in ids for ids in encodings):
             raise PromptMaskError()
         order = sorted(range(len(encodings)), key=lambda i: len(encodings[i]))
