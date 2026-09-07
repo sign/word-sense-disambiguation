@@ -32,7 +32,7 @@ assert tm == cm, f'CUDA major mismatch: torch {torch.version.cuda} vs {cupy}'"
 RUN python -c "import spacy; nlp = spacy.load('en_core_web_trf'); nlp.add_pipe('entityLinker'); nlp('Apple is a technology company.')"
 # The model name mirrors _DEFAULT_MODEL in wsd/masked_language_model.py; it is
 # repeated here so the download can run before the code copy (keep in sync).
-RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('sign/ModernBERT-Large-Instruct-WSD')"
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('sign/Ettin-150m-WSD')"
 
 # Copy application code
 COPY wsd/ ./wsd/
