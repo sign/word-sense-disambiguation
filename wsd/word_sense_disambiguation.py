@@ -464,9 +464,10 @@ def _units(docs, per_doc) -> list[_Unit]:
     return [w for u in units for w in ([u] if u.definitions else u.words)]
 
 
-def _run_units(docs, results, units: list[_Unit], skip_single_sense: bool) -> list[_Unit]:
-    """Disambiguate the units in one model batch and write the answers on their tokens.
-    Returns the multiword units the model rejected ("none of the above"); their tokens stay unset."""
+def _build_batch(
+    docs, results, units: list[_Unit], skip_single_sense: bool,
+) -> tuple[list[DisambiguationInput], list[_Unit]]:
+    """Model inputs for the units; under ``skip_single_sense`` a unit with one candidate is assigned directly."""
     batch: list[DisambiguationInput] = []
     kept: list[_Unit] = []
     for u in units:
@@ -479,16 +480,55 @@ def _run_units(docs, results, units: list[_Unit], skip_single_sense: bool) -> li
         batch.append(DisambiguationInput(word=word, marked_sentence=_mark_span(docs[u.doc], u.start, u.end),
                                          definitions=u.definitions))
         kept.append(u)
+    return batch, kept
+
+
+def _apply_results(results, kept: list[_Unit], model_results) -> list[_Unit]:
+    """Write the model's answers on the units' tokens. Returns the multiword units the model rejected
+    ("none of the above"); their tokens stay unset for their words' own turn."""
     rejected = []
-    for u, result in zip(kept, disambiguate_word_batch(batch), strict=True):
+    for u, result in zip(kept, model_results, strict=True):
         if result.definition == NONE_OF_THE_ABOVE and u.expression is not None:
-            rejected.append(u)  # not the compound reading: the words get their own turn
+            rejected.append(u)
             continue
         for tok in results[u.doc].tokens[u.start:u.end]:
             tok.confidence, tok.expression = result.confidence, u.expression
             if result.definition != NONE_OF_THE_ABOVE:  # NOTA leaves the synset fields None
                 tok.synset_id, tok.synset_definition = result.synset_id, result.definition
     return rejected
+
+
+def _run_units(docs, results, units: list[_Unit], skip_single_sense: bool) -> list[_Unit]:
+    batch, kept = _build_batch(docs, results, units, skip_single_sense)
+    return _apply_results(results, kept, disambiguate_word_batch(batch))
+
+
+@dataclass
+class PreparedBatch:
+    """Everything :func:`disambiguate_docs` computes before the model runs (CPU only, picklable), so a
+    producer process can do it while the model process only runs the forward pass."""
+    docs: list
+    results: list[WordSenseDisambiguation]
+    batch: list[DisambiguationInput]
+    kept: list[_Unit]
+
+
+def prepare_docs(docs: list, skip_single_sense: bool = False) -> PreparedBatch:
+    """Phase 1 without the model: entities, WordNet lookups for expressions and words, model inputs."""
+    per_doc = [_create_base_tokens(doc) for doc in docs]
+    results = [WordSenseDisambiguation(tokens=tokens, entities=_extract_entities(doc))
+               for doc, (tokens, _) in zip(docs, per_doc, strict=True)]
+    batch, kept = _build_batch(docs, results, _units(docs, per_doc), skip_single_sense)
+    return PreparedBatch(docs, results, batch, kept)
+
+
+def complete_docs(
+    prepared: PreparedBatch, model_results, skip_single_sense: bool = False,
+) -> list[WordSenseDisambiguation]:
+    """Apply the phase-1 answers, then disambiguate the words of rejected expressions (phase 2)."""
+    rejected = _apply_results(prepared.results, prepared.kept, model_results)
+    _run_units(prepared.docs, prepared.results, [w for u in rejected for w in u.words], skip_single_sense)
+    return prepared.results
 
 
 def disambiguate_docs(docs: list, skip_single_sense: bool = False) -> list[WordSenseDisambiguation]:
@@ -504,12 +544,8 @@ def disambiguate_docs(docs: list, skip_single_sense: bool = False) -> list[WordS
     directly (confidence 1.0) instead of asking the model whether it is "none of
     the above"; about a fifth of prompts in running text, so a real saving at scale.
     """
-    per_doc = [_create_base_tokens(doc) for doc in docs]
-    results = [WordSenseDisambiguation(tokens=tokens, entities=_extract_entities(doc))
-               for doc, (tokens, _) in zip(docs, per_doc, strict=True)]
-    rejected = _run_units(docs, results, _units(docs, per_doc), skip_single_sense)
-    _run_units(docs, results, [w for u in rejected for w in u.words], skip_single_sense)
-    return results
+    prepared = prepare_docs(docs, skip_single_sense)
+    return complete_docs(prepared, disambiguate_word_batch(prepared.batch), skip_single_sense)
 
 
 def disambiguate(text: str, language: str = "en") -> WordSenseDisambiguation:
