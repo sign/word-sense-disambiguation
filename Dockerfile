@@ -26,11 +26,11 @@ RUN if [ -n "$TORCH_INDEX_URL" ]; then pip install --no-cache-dir torch --index-
 # venv layer, which the spaCy entity-linker KB is written into) stay identical
 # across code-only changes and registries/Cloud Run can reuse them.
 RUN python -c "import spacy; spacy.load('en_core_web_lg'); from spacy_entity_linker.DatabaseConnection import get_wikidata_instance; get_wikidata_instance()"
-# The entity linker's knowledge base is downloaded as a 1.3 GB SQLite file; we only read aliases and the
-# label/description/views of items, so the statements table, the page ids and two indexes go (0.86 GB).
+# The entity linker's knowledge base is downloaded as a 1.3 GB SQLite file; its alias query reads the aliases
+# table and item label/description/views/inlinks, so the statements table, the page ids and two indexes go.
 RUN python -c "import sqlite3, spacy_entity_linker.DatabaseConnection as d; c = sqlite3.connect(d.DB_DEFAULT_PATH); \
 [c.execute(q) for q in ('drop table statements', 'drop index joined_inlinks_index', 'drop index joined_views_index', \
-'alter table joined drop column page_id', 'alter table aliases drop column en_alias')]; c.commit(); c.execute('vacuum')"
+'alter table joined drop column page_id')]; c.commit(); c.execute('vacuum')"
 # The model name mirrors DEFAULT_MODEL in wsd/masked_language_model.py; it is
 # repeated here so the download can run before the code copy (keep in sync).
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('sign/Ettin-150m-WSD')"
