@@ -13,9 +13,8 @@ WORKDIR /app
 COPY pyproject.toml .
 RUN mkdir wsd && touch wsd/__init__.py && touch /app/README.md
 
-# Install Python dependencies. torch arrives via transformers with its CUDA runtime bundled as pip
-# wheels, so no CUDA base image is needed; spaCy (en_core_web_lg) runs on the CPU. Bytecode caches
-# and package tests are dropped.
+# Install Python dependencies. torch's pip wheel bundles its CUDA runtime, so no CUDA base image is
+# needed; spaCy (en_core_web_lg) runs on the CPU. Bytecode caches and package tests are dropped.
 RUN pip install --no-cache-dir ".[web]" && find /opt/venv -name "__pycache__" -type d -exec rm -rf {} + \
     && find /opt/venv -name "*.pyc" -delete && rm -rf /opt/venv/lib/python3.12/site-packages/*/tests
 

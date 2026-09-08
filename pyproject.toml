@@ -8,6 +8,8 @@ authors = [
 ]
 readme = "README.md"
 dependencies = [
+    "torch",
+    "numpy",
     "transformers",
     "requests",
     "spacy",
