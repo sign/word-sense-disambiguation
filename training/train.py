@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 from transformers import (
@@ -76,12 +77,16 @@ class TrainingConfig:
     semcor: Path | None = None  # Raganato-format corpus prefix to add to training (e.g. .../SemCor/semcor)
     nota_examples: bool = True  # include the one cross-POS "none of the above" example per word
     wngt: Path | None = None  # WordNet gloss corpus `glosstag` dir to add to training
+    unlabeled_prompts: Path | None = None  # jsonl of {"prompt": ...} rows trained with the teacher's distribution only
     wngt_parts: str = "def,ex"  # which gloss parts to use
     wngt_tags: str = "man,auto"  # which tag qualities to use
     sense_index: Path | None = None  # WordNet 3.0 index.sense, needed with --semcor
     weight_decay: float = DEFAULT_WEIGHT_DECAY
     label_smoothing: float = DEFAULT_LABEL_SMOOTHING
     lr_scheduler: str = DEFAULT_LR_SCHEDULER
+
+
+UNLABELED = -1  # label at the mask position of a prompt that only has a teacher distribution
 
 
 @dataclass
@@ -342,6 +347,11 @@ def build_examples(
         )
         print(f"Adding {len(semcor_examples)} examples from {config.semcor}")
         training_examples.extend(semcor_examples)
+    if config.unlabeled_prompts:
+        with open(config.unlabeled_prompts) as f:
+            unlabeled = [TrainingExample("", "", "", "", "", json.loads(line)["prompt"]) for line in f]
+        print(f"Adding {len(unlabeled)} unlabeled prompts from {config.unlabeled_prompts} (teacher-only loss)")
+        training_examples.extend(unlabeled)
     if config.wngt:
         from training.semcor import load_sense_index
         from training.wngt import load_wngt
@@ -407,7 +417,9 @@ class WSDDataset(Dataset):
         input_ids = encoding["input_ids"]
         # __init__ guarantees a mask survives truncation, so .index is safe.
         mask_pos = input_ids.index(self.tokenizer.mask_token_id)
-        answer_compact_id = self.letter_to_compact[example.correct_answer_letter]
+        # UNLABELED marks a prompt without a gold answer: DistillTrainer trains it on the teacher only
+        letter = example.correct_answer_letter
+        answer_compact_id = self.letter_to_compact[letter] if letter else UNLABELED
 
         labels = [-100] * len(input_ids)
         labels[mask_pos] = answer_compact_id
@@ -494,8 +506,80 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Label smoothing applied in the model loss")
     parser.add_argument("--lr-scheduler", type=str, default=DEFAULT_LR_SCHEDULER,
                         help="HuggingFace LR scheduler type (e.g. linear, cosine, cosine_with_restarts)")
+    parser.add_argument("--teacher", type=Path, help="distill from this trained WSD model (same letters/prompts)")
+    parser.add_argument("--unlabeled-prompts", type=Path,
+                        help="jsonl of {\"prompt\": ...} rows (scripts/dump_prompts.py); needs --teacher")
+    parser.add_argument("--distill-alpha", type=float, default=0.5, help="weight of the KL term vs the label loss")
+    parser.add_argument("--distill-temperature", type=float, default=2.0)
+    parser.add_argument("--grad-accum", type=int, default=1, help="gradient accumulation steps")
+    parser.add_argument("--drop-layers", type=int, default=0,
+                        help="remove this many top encoder layers before training")
     parser.add_argument("--nodes", type=int, help=argparse.SUPPRESS)  # appended by run_distributed.py
     return parser.parse_args(argv)
+
+
+class UnlabeledNeedsTeacherError(ValueError):
+    def __init__(self):
+        super().__init__("--unlabeled-prompts needs --teacher (their loss is the teacher's distribution)")
+
+
+class DistillTrainer(Trainer):
+    """Trainer whose loss mixes the label cross-entropy with KL to a frozen teacher's answer
+    distribution at the same mask positions (classic soft-target distillation)."""
+
+    def __init__(self, *args, teacher, alpha: float, temperature: float, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.teacher, self.alpha, self.temperature = teacher, alpha, temperature
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        labels = inputs["labels"]
+        positions = (labels != -100).int().argmax(dim=-1)  # the one answer slot per row
+        target = labels.gather(1, positions[:, None]).squeeze(1)  # UNLABELED (-1) for teacher-only rows
+        batch = {"input_ids": inputs["input_ids"], "attention_mask": inputs["attention_mask"],
+                 "prediction_positions": positions}
+        outputs = model(**batch)
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+            teacher_logits = self.teacher(**batch).logits.float()
+        logits = outputs.logits.float()
+        t = self.temperature
+        kl = nn.functional.kl_div(
+            nn.functional.log_softmax(logits / t, dim=-1), nn.functional.log_softmax(teacher_logits / t, dim=-1),
+            log_target=True, reduction="batchmean",
+        ) * t * t
+        labeled = target >= 0
+        if labeled.any():
+            ce = nn.functional.cross_entropy(
+                logits[labeled], target[labeled], label_smoothing=float(getattr(model.config, "label_smoothing", 0.0)),
+            )
+            loss = (1 - self.alpha) * ce + self.alpha * kl
+        else:
+            loss = kl
+        return (loss, outputs) if return_outputs else loss
+
+
+def _trainer(args, device) -> tuple[type, dict]:
+    """Plain Trainer, or DistillTrainer with the frozen teacher loaded on ``device``."""
+    if not args.teacher:
+        if args.unlabeled_prompts:
+            raise UnlabeledNeedsTeacherError()
+        return Trainer, {}
+    teacher = WSDModernBertForMaskedLM.from_pretrained(
+        args.teacher, dtype=torch.bfloat16, attn_implementation=attn_implementation(),
+    ).to(device).eval().requires_grad_(False)
+    teacher.sparse_prediction = True
+    print(f"distilling from {args.teacher} (alpha {args.distill_alpha}, T {args.distill_temperature})")
+    return DistillTrainer, {"teacher": teacher, "alpha": args.distill_alpha, "temperature": args.distill_temperature}
+
+
+def _drop_layers(model, n: int) -> None:
+    """Speed experiment: fine-tune a shallower encoder with the top ``n`` layers removed."""
+    if n:
+        keep = len(model.model.layers) - n
+        model.model.layers = model.model.layers[:keep]
+        model.config.num_hidden_layers = keep
+        if getattr(model.config, "layer_types", None):  # config validation checks the two agree
+            model.config.layer_types = list(model.config.layer_types[:keep])
+        print(f"dropped {n} top layers -> {keep} layers")
 
 
 def main(argv: list[str] | None = None):
@@ -517,6 +601,7 @@ def main(argv: list[str] | None = None):
         semcor=args.semcor,
         nota_examples=not args.no_nota_examples,
         wngt=args.wngt,
+        unlabeled_prompts=args.unlabeled_prompts,
         wngt_parts=args.wngt_parts,
         wngt_tags=args.wngt_tags,
         sense_index=args.sense_index,
@@ -547,6 +632,7 @@ def main(argv: list[str] | None = None):
     # Inference uses a parallel path via ``prediction_positions`` in model.py.
     model.sparse_prediction = True
     model.config.label_smoothing = config.label_smoothing  # applied in WSDModernBertForMaskedLM.forward
+    _drop_layers(model, args.drop_layers)
 
     # If we loaded a pristine checkpoint the decoder is still full-vocab; prune
     # it down to the 128 answer-letter rows. When resuming from a previously
@@ -622,6 +708,7 @@ def main(argv: list[str] | None = None):
         max_steps=config.max_steps,
         per_device_train_batch_size=config.batch_size,
         per_device_eval_batch_size=config.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
         learning_rate=config.learning_rate,
         warmup_steps=config.warmup_ratio,  # float < 1 is a ratio in transformers 5
         weight_decay=config.weight_decay,
@@ -641,7 +728,8 @@ def main(argv: list[str] | None = None):
         seed=config.random_seed,
     )
 
-    trainer = Trainer(
+    trainer_cls, trainer_kwargs = _trainer(args, training_args.device)
+    trainer = trainer_cls(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -650,6 +738,7 @@ def main(argv: list[str] | None = None):
         processing_class=tokenizer,
         compute_metrics=compute_metrics if eval_enabled else None,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics if eval_enabled else None,
+        **trainer_kwargs,
     )
 
     if config.max_steps > 0:
