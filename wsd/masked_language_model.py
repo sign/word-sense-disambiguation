@@ -52,7 +52,7 @@ class ModelComponents:
 class UnmaskResult:
     """Result of unmasking a single token"""
     token: str
-    probabilities: torch.Tensor
+    probabilities: list[float]  # one per answer letter; plain floats so callers never index a tensor
 
 
 @cache
@@ -152,12 +152,14 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     results: list[UnmaskResult | None] = [None] * len(texts)
     pending: list[tuple[list[int], torch.Tensor, torch.cuda.Stream]] = []
     for slice_start in range(0, len(texts), _SLICE_SIZE):
-        encodings = tokenizer(texts[slice_start:slice_start + _SLICE_SIZE])["input_ids"]
+        # the Rust batch encoder directly: the Python wrapper's per-encoding conversion
+        # (`_convert_encoding`) costs ~16 us per prompt, about as much as the encoding itself
+        chunk_texts = texts[slice_start:slice_start + _SLICE_SIZE]
+        encodings = [e.ids for e in tokenizer.backend_tokenizer.encode_batch(chunk_texts)]
         if any(tokenizer.mask_token_id not in ids for ids in encodings):
             raise PromptMaskError()
         order = sorted(range(len(encodings)), key=lambda i: len(encodings[i]))
-        for start in range(0, len(order), _BUCKET_CHUNK_SIZE):
-            local_idx = order[start : start + _BUCKET_CHUNK_SIZE]
+        for local_idx in _chunks(order):
             chunk_idx = [slice_start + i for i in local_idx]
             input_ids, attention_mask = _pad([encodings[i] for i in local_idx], tokenizer.pad_token_id)
             positions = _prediction_positions(input_ids, tokenizer.mask_token_id)
@@ -180,6 +182,16 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     # IndexError downstream rather than a clear failure here.
     assert all(r is not None for r in results), "unmask_token_batch left slots unfilled"
     return cast(list[UnmaskResult], results)
+
+
+def _chunks(order: list[int]) -> list[list[int]]:
+    """Split length-sorted indices into chunks of ``_BUCKET_CHUNK_SIZE``, never a chunk of one row:
+    a 1-row batch fails the compiled graph's "batch >= 2" guard and costs a 15-25 s recompile."""
+    starts = list(range(0, len(order), _BUCKET_CHUNK_SIZE))
+    if len(order) > 1 and len(order) - starts[-1] == 1:
+        starts.pop()  # fold the lone remainder into the previous chunk
+    chunks = [order[a:b] for a, b in zip(starts, starts[1:] + [len(order)], strict=True)]
+    return [c * 2 if len(c) == 1 else c for c in chunks]  # a single prompt runs twice instead
 
 
 def _pad(sequences: list[list[int]], pad_id: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -217,14 +229,15 @@ def _logits_to_results(
 ) -> list[UnmaskResult]:
     """Turn ``(batch, answer_vocab)`` logits into per-example UnmaskResults.
 
-    Probabilities come back on the CPU in one copy per chunk; callers index
-    them per option, which on a GPU tensor would be one device sync each.
+    Probabilities come back as Python lists in one copy per chunk; callers index
+    them per option, which on a tensor costs a Python/C round trip each (and on a
+    GPU tensor a device sync).
     """
     probs = torch.softmax(logits.float(), dim=-1).cpu()
     compact_ids = torch.argmax(probs, dim=-1).tolist()
     return [
         UnmaskResult(token=letters[cid], probabilities=p)
-        for cid, p in zip(compact_ids, probs, strict=True)
+        for cid, p in zip(compact_ids, probs.tolist(), strict=True)  # one conversion per chunk
     ]
 
 
