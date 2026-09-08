@@ -57,6 +57,13 @@ python -m wsd.batch --input 'shards/part-*' --output-dir out/ [--no-entities] [-
 
 See [wsd/README.md](./wsd/README.md#throughput) for measured throughput.
 
+### Entities
+
+Each result carries Wikidata links for spaCy's person, organisation, place and facility spans (`entities`:
+id, token span, label, description, URL), chosen from the spacy-entity-linker alias table by popularity.
+On AIDA-CoNLL test with Wikidata gold this scores F1 0.50 (precision 0.58); nationalities and other groups
+are left to word sense disambiguation because the popularity prior links them badly.
+
 Multiword expressions that WordNet lists (`test tube`, `New York`, `give up`) are disambiguated as one unit
 first; each of their tokens carries the shared synset and the `expression` it belongs to. Only when the
 model answers "none of the above" for the expression are its words disambiguated individually.
