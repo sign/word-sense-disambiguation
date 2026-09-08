@@ -322,6 +322,7 @@ _SPACY_TO_WORDNET_POS: dict[str, str] = {
     # n
     'NOUN': 'n',
     'PROPN': 'n',
+    'PRON': 'h',  # pronouns come from the Wikidata-lexeme extension of sign/wn (WN-LMF code h)
     'NUM': 'n',
     'INTJ': 'n',  # hello→n, alas/ouch/wow→r (but only noun available)
     # v
@@ -359,6 +360,41 @@ def _create_base_tokens(doc) -> tuple[list[DisambiguatedToken], list[int]]:
             content_word_indices.append(token.i)
 
     return tokens, content_word_indices
+
+
+def _word_definitions(tokens) -> list[list[Definition]]:
+    """Candidate senses per token: the union over its lookup forms (see :func:`_queries`),
+    in one WordNet request, keeping the first form's order and deduplicating synsets."""
+    per_token = [_queries(t) for t in tokens]
+    flat = get_definitions([q for qs in per_token for q in qs])
+    out: list[list[Definition]] = []
+    pos = 0
+    for qs in per_token:
+        merged: dict[str, Definition] = {}
+        for defs in flat[pos:pos + len(qs)]:
+            for definition in defs:
+                merged.setdefault(definition.synset_id, definition)
+        pos += len(qs)
+        out.append(list(merged.values()))
+    return out
+
+
+def _queries(token) -> list[WordQuery]:
+    """Lookup forms for one token, whose senses are pooled: the spaCy lemma and POS, the
+    surface form (spaCy keeps proper nouns unlemmatized, lemmatizes "best" to "good" and
+    "species" to "specie"; "works"/"years" have senses of their own) and a naive singular
+    for proper nouns. A verb used as a modifier ("a damaged gene", "is concerned") is a
+    participial adjective, so its adjective senses are listed first."""
+    pos = _SPACY_TO_WORDNET_POS[token.pos_]
+    lemma, surface = token.lemma_.lower(), token.text.lower()
+    candidates = [(lemma, pos)]
+    if token.pos_ == "VERB" and token.dep_ in ("amod", "acomp"):
+        candidates.insert(0, (surface, "a"))
+    if surface != lemma:
+        candidates.append((surface, pos))
+    if token.pos_ == "PROPN" and len(lemma) > 3 and lemma.endswith("s"):  # ponytail: naive plural strip
+        candidates.append((lemma[:-1], pos))
+    return [WordQuery(form=f, pos=p) for f, p in dict.fromkeys(candidates)]
 
 
 def _mark_span(doc, start: int, end: int) -> str:
@@ -410,10 +446,10 @@ def _units(docs, per_doc) -> list[_Unit]:
     A span whose form has no definitions for its POS is replaced by its words right away."""
     span_queries: list[WordQuery] = []
     span_units: list[_Unit] = []
-    word_queries: list[WordQuery] = []
+    word_tokens: list = []
     word_slots: list[tuple[int, int, list[_Unit]]] = []  # (doc, token, list the word unit joins)
     units: list[_Unit] = []
-    for d, (doc, (tokens, content_idx)) in enumerate(zip(docs, per_doc, strict=True)):
+    for d, (doc, (_, content_idx)) in enumerate(zip(docs, per_doc, strict=True)):
         owner: dict[int, _Unit] = {}
         for span in find_spans(doc):
             unit = _Unit(d, span.start, span.end, [], span.form)
@@ -422,102 +458,14 @@ def _units(docs, per_doc) -> list[_Unit]:
             units.append(unit)
             owner.update(dict.fromkeys(range(span.start, span.end), unit))
         for i in content_idx:
-            word_queries.append(WordQuery(form=tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[tokens[i].pos]))
+            word_tokens.append(doc[i])
             word_slots.append((d, i, owner[i].words if i in owner else units))
-    definitions = get_definitions(span_queries + word_queries)
-    for unit, defs in zip(span_units, definitions[:len(span_units)], strict=True):
+    for unit, defs in zip(span_units, get_definitions(span_queries), strict=True):
         unit.definitions = defs
-    for (d, i, target), defs in zip(word_slots, definitions[len(span_units):], strict=True):
+    for (d, i, target), defs in zip(word_slots, _word_definitions(word_tokens), strict=True):
         if defs:
             target.append(_Unit(d, i, i + 1, defs))
     return [w for u in units for w in ([u] if u.definitions else u.words)]
-
-
-def _mark_span(doc, start: int, end: int) -> str:
-    """Sentence text with tokens ``start:end`` wrapped in one ``*...*`` pair."""
-    text = ""
-    for token in doc:
-        if token.i == start:
-            text += "*"
-        text += token.text
-        if token.i == end - 1:
-            text += "*"
-        text += token.whitespace_
-    return text
-
-
-def _extract_entities(doc) -> list[Entity]:
-    """Extract linked entities from a spaCy doc (empty when the entityLinker pipe is disabled)."""
-    if isinstance(doc, LightDoc):
-        return doc.entities
-    entities = []
-    for ent in getattr(doc._, "linkedEntities", None) or []:
-        span = ent.get_span()
-        entities.append(Entity(
-            id=ent.identifier,
-            start_token=span.start,
-            end_token=span.end - 1,
-            text=ent.label,
-            description=ent.description,
-            url=ent.url,
-        ))
-    return entities
-
-
-@dataclass
-class _Unit:
-    """One thing to disambiguate: a WordNet multiword span or a single word (token range ``[start, end)``
-    of doc ``doc``). A span carries its ``words`` as fallback units, run when the compound reading is rejected."""
-    doc: int
-    start: int
-    end: int
-    definitions: list[Definition]
-    expression: str | None = None  # the WordNet multiword form, None for a single word
-    words: list["_Unit"] = field(default_factory=list)
-
-
-def _units(docs, per_doc) -> list[_Unit]:
-    """Phase-1 units for all docs with their definitions fetched in one lookup: every WordNet
-    multiword span (plus its words as fallbacks) and every content word outside a span."""
-    queries: list[WordQuery] = []
-    pending: list[tuple[int, int, int, str | None]] = []  # (doc, start, end, expression) per query
-    for d, (doc, (tokens, content_idx)) in enumerate(zip(docs, per_doc, strict=True)):
-        covered: set[int] = set()
-        for span in find_spans(doc):
-            queries.append(WordQuery(form=span.form, pos=_SPACY_TO_WORDNET_POS.get(doc[span.head].pos_, "n")))
-            pending.append((d, span.start, span.end, span.form))
-            covered.update(range(span.start, span.end))
-        for i in content_idx:
-            if i in covered and not any(s <= i < e for _, s, e, x in pending if x and s <= i < e):
-                continue  # (unreachable: covered indices always belong to a pending span)
-            queries.append(WordQuery(form=tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[tokens[i].pos]))
-            pending.append((d, i, i + 1, None))
-    units: list[_Unit] = []
-    spans: dict[tuple[int, int, int], _Unit] = {}
-    for (d, a, b, expression), defs in zip(pending, get_definitions(queries), strict=True):
-        unit = _Unit(d, a, b, defs, expression)
-        if expression is not None:
-            spans[(d, a, b)] = unit
-            units.append(unit)
-        else:
-            owner = next((u for (dd, s, e), u in spans.items() if dd == d and s <= a < e), None)
-            (owner.words if owner else units).append(unit) if defs else None
-    # a span whose form has no definitions for its POS never reaches the model: its words run in phase 1
-    return [w for u in units if u.expression and not u.definitions for w in u.words] + \
-           [u for u in units if u.definitions]
-
-
-def _mark_span(doc, start: int, end: int) -> str:
-    """Sentence text with tokens ``start:end`` wrapped in one ``*...*`` pair."""
-    text = ""
-    for token in doc:
-        if token.i == start:
-            text += "*"
-        text += token.text
-        if token.i == end - 1:
-            text += "*"
-        text += token.whitespace_
-    return text
 
 
 def _run_units(docs, results, units: list[_Unit], skip_single_sense: bool) -> list[_Unit]:

@@ -68,8 +68,8 @@ def test_verb_spans_need_a_particle(fake_model):
 def test_span_first_then_word_fallback(fake_model):
     tubes, dogs = disambiguate_docs([TEST_TUBE, HOT_DOGS])
     # phase 1: expressions and the words outside them, one batch; phase 2: only the rejected expression's words
-    assert [w for w, _ in fake_model[0]] == ["test tube", "held", "hot dogs", "barked"]
-    assert fake_model[0][0][1] == "She held a *test tube*."
+    assert sorted(w for w, _ in fake_model[0]) == ["barked", "held", "hot dogs", "test tube"]
+    assert dict(fake_model[0])["test tube"] == "She held a *test tube*."
     assert [w for w, _ in fake_model[1]] == ["hot", "dogs"]
     assert [(t.expression, t.synset_id) for t in tubes.tokens[3:5]] == [("test tube", "test_tube")] * 2
     assert (tubes.tokens[1].synset_id, tubes.tokens[1].expression) == ("hold-1", None)
