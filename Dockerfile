@@ -29,7 +29,7 @@ assert tm == cm, f'CUDA major mismatch: torch {torch.version.cuda} vs {cupy}'"
 # Download the models before the code copy, so these heavy layers (and the
 # venv layer, which the spaCy entity-linker KB is written into) stay identical
 # across code-only changes and registries/Cloud Run can reuse them.
-RUN python -c "import spacy; nlp = spacy.load('en_core_web_trf'); nlp.add_pipe('entityLinker'); nlp('Apple is a technology company.')"
+RUN python -c "import spacy; spacy.load('en_core_web_trf'); from spacy_entity_linker.DatabaseConnection import get_wikidata_instance; get_wikidata_instance()"
 # The model name mirrors _DEFAULT_MODEL in wsd/masked_language_model.py; it is
 # repeated here so the download can run before the code copy (keep in sync).
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('sign/Ettin-150m-WSD')"

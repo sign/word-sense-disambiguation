@@ -31,9 +31,7 @@ def _load_pipeline(language: str) -> spacy.language.Language:
     if os.environ.get("WSD_SPACY_MIXED_PRECISION") == "1":
         # fp16 transformer: smaller GPU footprint next to the WSD model (opt-in; may flip rare tags)
         config = {"components": {"transformer": {"model": {"mixed_precision": True}}}}
-    nlp = spacy.load(_PIPELINE_MODELS[language], config=config)
-    nlp.add_pipe("entityLinker", last=True)
-    return nlp
+    return spacy.load(_PIPELINE_MODELS[language], config=config)
 
 
 def _get_pipeline_entry(language: str) -> tuple[spacy.language.Language, str]:
@@ -66,10 +64,10 @@ def run_spacy_pipeline(text: str, language: str = "en"):
 
 
 def run_spacy_pipe(texts: list[str], language: str = "en", batch_size: int = 256, entities: bool = True) -> list:
-    """Run the pipeline over many texts at once (``nlp.pipe``), optionally
-    skipping the CPU-bound entity linker."""
+    """Run the pipeline over many texts at once (``nlp.pipe``); ``entities=False``
+    skips NER (and therefore entity linking, which works on the NER spans)."""
     nlp, backend = _get_pipeline_entry(language)
-    disable = [] if entities else ["entityLinker"]
+    disable = [] if entities else ["ner"]
     with use_ops(backend), nlp.select_pipes(disable=disable):
         return list(nlp.pipe(texts, batch_size=batch_size))
 
@@ -95,11 +93,7 @@ def _build_gpu_spacy_pipeline(language: str = "en"):
         logger.info("No GPU available for spaCy; staying on CPU")
         return None
     gpu_nlp = _load_pipeline(language)
-    # entityLinker stays on CPU and its sqlite connection is a process-wide
-    # singleton bound to the serving thread, so it must not run here; the
-    # transformer stack is what needs the one-time kernel compilation.
-    with gpu_nlp.select_pipes(disable=["entityLinker"]):
-        gpu_nlp("bank")
+    gpu_nlp("bank")  # the transformer stack needs the one-time kernel compilation
     return gpu_nlp
 
 

@@ -411,21 +411,17 @@ def _mark_span(doc, start: int, end: int) -> str:
 
 
 def _extract_entities(doc) -> list[Entity]:
-    """Extract linked entities from a spaCy doc (empty when the entityLinker pipe is disabled)."""
+    """Wikidata links for the doc's named-entity spans (empty when the NER pipe is disabled)."""
     if isinstance(doc, LightDoc):
         return doc.entities
-    entities = []
-    for ent in getattr(doc._, "linkedEntities", None) or []:
-        span = ent.get_span()
-        entities.append(Entity(
-            id=ent.identifier,
-            start_token=span.start,
-            end_token=span.end - 1,
-            text=ent.label,
-            description=ent.description,
-            url=ent.url,
-        ))
-    return entities
+    from wsd.entities import (
+        link_named_entities,  # needs the spacy-entity-linker knowledge base (not in the training image)
+    )
+    return [
+        Entity(id=item_id, start_token=span.start, end_token=span.end - 1, text=label, description=description,
+               url=f"https://www.wikidata.org/wiki/Q{item_id}")
+        for span, item_id, label, description in link_named_entities(doc)
+    ]
 
 
 @dataclass
