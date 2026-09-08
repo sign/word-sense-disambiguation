@@ -322,6 +322,7 @@ _SPACY_TO_WORDNET_POS: dict[str, str] = {
     # n
     'NOUN': 'n',
     'PROPN': 'n',
+    'PRON': 'h',  # pronouns come from the Wikidata-lexeme extension of sign/wn (WN-LMF code h)
     'NUM': 'n',
     'INTJ': 'n',  # hello→n, alas/ouch/wow→r (but only noun available)
     # v
@@ -359,6 +360,41 @@ def _create_base_tokens(doc) -> tuple[list[DisambiguatedToken], list[int]]:
             content_word_indices.append(token.i)
 
     return tokens, content_word_indices
+
+
+def _word_definitions(tokens) -> list[list[Definition]]:
+    """Candidate senses per token: the union over its lookup forms (see :func:`_queries`),
+    in one WordNet request, keeping the first form's order and deduplicating synsets."""
+    per_token = [_queries(t) for t in tokens]
+    flat = get_definitions([q for qs in per_token for q in qs])
+    out: list[list[Definition]] = []
+    pos = 0
+    for qs in per_token:
+        merged: dict[str, Definition] = {}
+        for defs in flat[pos:pos + len(qs)]:
+            for definition in defs:
+                merged.setdefault(definition.synset_id, definition)
+        pos += len(qs)
+        out.append(list(merged.values()))
+    return out
+
+
+def _queries(token) -> list[WordQuery]:
+    """Lookup forms for one token, whose senses are pooled: the spaCy lemma and POS, the
+    surface form (spaCy keeps proper nouns unlemmatized, lemmatizes "best" to "good" and
+    "species" to "specie"; "works"/"years" have senses of their own) and a naive singular
+    for proper nouns. A verb used as a modifier ("a damaged gene", "is concerned") is a
+    participial adjective, so its adjective senses are listed first."""
+    pos = _SPACY_TO_WORDNET_POS[token.pos_]
+    lemma, surface = token.lemma_.lower(), token.text.lower()
+    candidates = [(lemma, pos)]
+    if token.pos_ == "VERB" and token.dep_ in ("amod", "acomp"):
+        candidates.insert(0, (surface, "a"))
+    if surface != lemma:
+        candidates.append((surface, pos))
+    if token.pos_ == "PROPN" and len(lemma) > 3 and lemma.endswith("s"):  # ponytail: naive plural strip
+        candidates.append((lemma[:-1], pos))
+    return [WordQuery(form=f, pos=p) for f, p in dict.fromkeys(candidates)]
 
 
 def _mark_span(doc, start: int, end: int) -> str:
@@ -410,10 +446,10 @@ def _units(docs, per_doc) -> list[_Unit]:
     A span whose form has no definitions for its POS is replaced by its words right away."""
     span_queries: list[WordQuery] = []
     span_units: list[_Unit] = []
-    word_queries: list[WordQuery] = []
+    word_tokens: list = []
     word_slots: list[tuple[int, int, list[_Unit]]] = []  # (doc, token, list the word unit joins)
     units: list[_Unit] = []
-    for d, (doc, (tokens, content_idx)) in enumerate(zip(docs, per_doc, strict=True)):
+    for d, (doc, (_, content_idx)) in enumerate(zip(docs, per_doc, strict=True)):
         owner: dict[int, _Unit] = {}
         for span in find_spans(doc):
             unit = _Unit(d, span.start, span.end, [], span.form)
@@ -422,12 +458,11 @@ def _units(docs, per_doc) -> list[_Unit]:
             units.append(unit)
             owner.update(dict.fromkeys(range(span.start, span.end), unit))
         for i in content_idx:
-            word_queries.append(WordQuery(form=tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[tokens[i].pos]))
+            word_tokens.append(doc[i])
             word_slots.append((d, i, owner[i].words if i in owner else units))
-    definitions = get_definitions(span_queries + word_queries)
-    for unit, defs in zip(span_units, definitions[:len(span_units)], strict=True):
+    for unit, defs in zip(span_units, get_definitions(span_queries), strict=True):
         unit.definitions = defs
-    for (d, i, target), defs in zip(word_slots, definitions[len(span_units):], strict=True):
+    for (d, i, target), defs in zip(word_slots, _word_definitions(word_tokens), strict=True):
         if defs:
             target.append(_Unit(d, i, i + 1, defs))
     return [w for u in units for w in ([u] if u.definitions else u.words)]
