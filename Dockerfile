@@ -13,15 +13,24 @@ WORKDIR /app
 COPY pyproject.toml .
 RUN mkdir wsd && touch wsd/__init__.py && touch /app/README.md
 
-# Install Python dependencies. torch's pip wheel bundles its CUDA runtime, so no CUDA base image is
-# needed; spaCy (en_core_web_lg) runs on the CPU. Bytecode caches and package tests are dropped.
-RUN pip install --no-cache-dir ".[web]" && find /opt/venv -name "__pycache__" -type d -exec rm -rf {} + \
+# Install Python dependencies. TORCH_INDEX_URL selects the torch build: empty pulls the default PyPI
+# wheel (bundles the CUDA runtime, ~4.4 GB, for GPU instances); https://download.pytorch.org/whl/cpu
+# gives the CPU-only image (the 150m model answers a sentence in ~0.1-0.25 s on 2-4 cores). spaCy
+# (en_core_web_lg) runs on the CPU either way. Bytecode caches and package tests are dropped.
+ARG TORCH_INDEX_URL=""
+RUN if [ -n "$TORCH_INDEX_URL" ]; then pip install --no-cache-dir torch --index-url "$TORCH_INDEX_URL"; fi \
+    && pip install --no-cache-dir ".[web]" && find /opt/venv -name "__pycache__" -type d -exec rm -rf {} + \
     && find /opt/venv -name "*.pyc" -delete && rm -rf /opt/venv/lib/python3.12/site-packages/*/tests
 
 # Download the models before the code copy, so these heavy layers (and the
 # venv layer, which the spaCy entity-linker KB is written into) stay identical
 # across code-only changes and registries/Cloud Run can reuse them.
 RUN python -c "import spacy; spacy.load('en_core_web_lg'); from spacy_entity_linker.DatabaseConnection import get_wikidata_instance; get_wikidata_instance()"
+# The entity linker's knowledge base is downloaded as a 1.3 GB SQLite file; we only read aliases and the
+# label/description/views of items, so the statements table, the page ids and two indexes go (0.86 GB).
+RUN python -c "import sqlite3, spacy_entity_linker.DatabaseConnection as d; c = sqlite3.connect(d.DB_DEFAULT_PATH); \
+[c.execute(q) for q in ('drop table statements', 'drop index joined_inlinks_index', 'drop index joined_views_index', \
+'alter table joined drop column page_id', 'alter table aliases drop column en_alias')]; c.commit(); c.execute('vacuum')"
 # The model name mirrors DEFAULT_MODEL in wsd/masked_language_model.py; it is
 # repeated here so the download can run before the code copy (keep in sync).
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('sign/Ettin-150m-WSD')"
