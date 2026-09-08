@@ -115,11 +115,26 @@ never trained on). Trained on 8xH100 via `training/sweep.py`; configs in `traini
 | same, without cross-POS "none of the above" examples (R2)              | 77.3%       | 79.3%       |
 | SemCor+OMSTI (1.1M instances) instead of SemCor, 1 epoch (R3)          | 77.6%       | 79.1%       |
 | ModernBERT-base, same data, 3 epochs (R7; ~2.5x cheaper per prompt)    | 73.5%       | 77.9%       |
+| Ettin-400m, same recipe (X5) / distilled from C3 (Y4)                  | 78.4% / 78.9% | 80.5% / 80.7% |
+| **Ettin-1B, lr 2e-5, batch 32x2 (Z1; `sign/Ettin-1B-WSD`; 3.1x the cost of C3)** | **80.3%** | **81.4%** |
+| ModernBERT-large with 8 of 28 layers dropped (Z2; 0.7x the cost)       | 76.5%       | 80.7%       |
+| Ettin-150m, 2 epochs (X8) / distilled from C3, 3 epochs (Y2)           | 74.9% / 75.9% | 79.4% / 80.1% |
+| **Ettin-150m distilled, 3 epochs (Y2; `sign/Ettin-150m-WSD`, the default; 0.44x the cost)** | **75.9%** | **80.1%** |
+| Ettin-68m / 32m / 17m, distilled from the 1B, 3 epochs (S6 / S4 / S2)  | 71.5 / 66.0 / 60.7% | 78.9 / 75.2 / 73.1% |
 
 Recipe for W4: `--wn-train --semcor SemCor/semcor --wngt glosstag --wngt-tags man --sense-index dict/index.sense
 --lr-scheduler cosine --label-smoothing 0.1 --weight-decay 0.01 --learning-rate 3e-5 --num-epochs 2 --batch-size 64`.
 The gloss corpus adds ~0.5 points on both benchmarks; its variants (definitions only, all tags, lr 2e-5/4e-5)
 are within noise of each other; 3 epochs (77.6% / 80.3%) and 1 epoch (77.5% / 79.9%) are both worse than 2.
+
+Round X-T (2026-09-06/07, 8xH100, `training/sweeps/2026-09-0*.json`): the control rerun of C3 gives 78.2% / 80.2%,
+so seed noise on SemEval ALL is about ±0.4. Within that noise and therefore rejected: keeping WordNet's sense order
+at training time, hypernym lemmas or example sentences appended to definitions (also 40-100% more tokens), 3+ epochs,
+SemCor+OMSTI, the automatically tagged gloss corpus. Real gains: the Ettin-1B encoder (+0.8 on ALL at 3x the cost)
+and soft-target distillation into small encoders (150m: 79.4 → 80.1). Every large-class model plateaus at 80.5-81
+on ALL. The 150m is saturated at 80.0 ± 0.4 (4-5 epochs, lower lr, alpha 0.8, T=1 all tried). Confidence cascades
+(small model answers, low-confidence prompts go to a large one): 150m → 1B escalating 9% reaches 81.0% at 0.72x the
+cost of C3; the 17m/32m are confidently wrong and do not work as a first stage. Details and graph: `scripts/cascade_suite.py`.
 
 What we learned: more epochs on the synthetic data alone overfit its style and destroy real-text accuracy;
 SemCor (222k gold-annotated sentences) fixes that, and it must be detokenized to match natural text (S5 vs R5).
@@ -142,9 +157,12 @@ one process per GPU, steady state per H100 80GB. spaCy `en_core_web_trf` runs on
 | + tokenize/pad the next slice while the GPU runs (vectorized pad), CUDA MPS, 2 persistent spaCy workers per GPU | 160-195 | output identical |
 | + 2,048 sentences per batch (model calls span several tokenization slices) | **175-230** | output identical |
 | + compact prompt template (retrained model, now `main` on the Hub)     | 205-265     | 78.3% / 80.6% vs 78.6% / 80.7% |
+| + no 1-row chunks (no torch.compile recompile stalls), list probabilities, flat JSON, Rust batch tokenizer | 230-250 | output identical |
+| **`sign/Ettin-150m-WSD` (default model), same pipeline**               | **380-420** | 75.9% / 80.1%; host-bound (GPU ~50% busy) |
+| same with CPU-only spaCy `en_core_web_lg`                              | 380-420     | end-to-end 74.3% vs 74.7% (trf); frees the GPU |
 | `--skip-single-sense`                                           | ~+20% (est.)        | 1-sense words assigned directly (20% of prompts) |
 
-A billion sentences at ~1,600 sentences/s per 8-GPU node is roughly 7 node-days.
+A billion sentences at ~3,200 sentences/s per 8-GPU node (150m model) is roughly 3.6 node-days.
 
 Where the forward pass stands (one H100, 32.6k real prompts, `torch.profiler` + `nvidia-smi dmon`): the model with
 pre-padded inputs runs at 4,100 prompts/s at 99% SM utilization, so the kernels (GEMM ~55%, compile-fused

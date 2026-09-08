@@ -14,7 +14,7 @@ from wsd.model_surgery import prune_decoder
 # Allow overriding the model source (e.g. a local checkpoint directory) for
 # benchmarking or evaluation without editing call sites. Read at call time so a
 # process can set WSD_MODEL after import (the sweep evaluates what it trained).
-_DEFAULT_MODEL = "sign/ModernBERT-Large-Instruct-WSD"
+_DEFAULT_MODEL = "sign/Ettin-150m-WSD"
 
 
 def default_model_name() -> str:

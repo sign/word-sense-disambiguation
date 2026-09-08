@@ -12,7 +12,7 @@ We expose a [web server](./wsd/server.py) that can be used to disambiguate words
   unset and the API package is installed (the cluster images built by `training/Enrootfile.sh` and
   `wsd/Enrootfile.sh`), the process starts a private API instance and uses that, so batch, training and
   benchmark jobs need no separate service.
-- `WSD_MODEL`: model name or local checkpoint directory (default `sign/ModernBERT-Large-Instruct-WSD`).
+- `WSD_MODEL`: model name or local checkpoint directory (default `sign/Ettin-150m-WSD`; `sign/ModernBERT-Large-Instruct-WSD` is the larger, 0.5-point more accurate model at 2.3x the cost, `sign/Ettin-1B-WSD` the most accurate at 7x).
 
 ### WordNet API server
 
