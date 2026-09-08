@@ -36,11 +36,27 @@ def best_candidate(text: str) -> tuple[int, str, str | None] | None:
     return None
 
 
+def _merge_adjacent(ents):
+    """spaCy often splits "Washington, D.C." or "New York, NY" into two spans; when the text of two adjacent
+    named spans (joined by a comma and/or a space) has an alias of its own, link that instead of the parts."""
+    ents = [e for e in ents if e.label_ in NAMED_ENTITY_LABELS]
+    merged = []
+    i = 0
+    while i < len(ents):
+        span = ents[i]
+        if i + 1 < len(ents):
+            gap = span.doc.text[span.end_char:ents[i + 1].start_char]
+            if gap in (", ", " ", ",") and best_candidate(span.doc.text[span.start_char:ents[i + 1].end_char]):
+                span = span.doc[span.start:ents[i + 1].end]
+                i += 1
+        merged.append(span)
+        i += 1
+    return merged
+
+
 def link_named_entities(doc):
     """Yield ``(span, item_id, label, description)`` for each named-entity span of a spaCy doc with a Wikidata match."""
-    for ent in doc.ents:
-        if ent.label_ not in NAMED_ENTITY_LABELS:
-            continue
-        hit = best_candidate(ent.text)
+    for span in _merge_adjacent(doc.ents):
+        hit = best_candidate(span.text)
         if hit:
-            yield ent, *hit
+            yield span, *hit

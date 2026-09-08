@@ -40,9 +40,13 @@ uvicorn --reload wsd.server:app --port 8080
 ### Running with Docker
 
 ```shell
-docker build --platform="linux/amd64" -t wsd .
+docker build --platform="linux/amd64" -t wsd .                                                        # GPU image
+docker build --platform="linux/amd64" --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu -t wsd .  # CPU-only, ~3 GB smaller
 docker run -p 8005:8080 -e PORT=8080 -e WORDNET_URL=http://host.docker.internal:8000 wsd
 ```
+
+`cloudbuild.yaml` builds both as `:gpu` and `:cpu` tags (`gcloud builds submit --config cloudbuild.yaml`).
+On the CPU image the default model answers a typical sentence in about 0.25 s on one core, 0.1 s on four.
 
 ## Batch processing
 

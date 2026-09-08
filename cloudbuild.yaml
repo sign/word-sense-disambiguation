@@ -1,0 +1,23 @@
+# Two images from one Dockerfile: `gpu` (default PyPI torch with the CUDA runtime, for GPU instances) and
+# `cpu` (torch from the CPU wheel index, ~3 GB smaller, for CPU-only Cloud Run).
+#   gcloud builds submit --config cloudbuild.yaml --substitutions _IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/wsd
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: gpu
+    args: [build, -t, "${_IMAGE}:gpu", -t, "${_IMAGE}:gpu-${SHORT_SHA}", .]
+  - name: gcr.io/cloud-builders/docker
+    id: cpu
+    waitFor: ["-"]
+    args: [build, --build-arg, TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu,
+           -t, "${_IMAGE}:cpu", -t, "${_IMAGE}:cpu-${SHORT_SHA}", .]
+images:
+  - "${_IMAGE}:gpu"
+  - "${_IMAGE}:gpu-${SHORT_SHA}"
+  - "${_IMAGE}:cpu"
+  - "${_IMAGE}:cpu-${SHORT_SHA}"
+substitutions:
+  _IMAGE: us-central1-docker.pkg.dev/${PROJECT_ID}/sign/word-sense-disambiguation
+options:
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 200
+timeout: 3600s
