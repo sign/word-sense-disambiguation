@@ -61,8 +61,9 @@ See [wsd/README.md](./wsd/README.md#throughput) for measured throughput.
 
 Each result carries Wikidata links for spaCy's person, organisation, place and facility spans (`entities`:
 id, token span, label, description, URL), chosen from the spacy-entity-linker alias table by popularity.
-On AIDA-CoNLL test with Wikidata gold this scores F1 0.50 (precision 0.58); nationalities and other groups
-are left to word sense disambiguation because the popularity prior links them badly.
+On AIDA-CoNLL test with Wikidata gold this scores F1 0.48 with the CPU pipeline `en_core_web_lg` (0.51 with
+`en_core_web_trf`, which finds more spans but needs a GPU to be fast); nationalities and other groups are
+left to word sense disambiguation because the popularity prior links them badly.
 
 Multiword expressions that WordNet lists (`test tube`, `New York`, `give up`) are disambiguated as one unit
 first; each of their tokens carries the shared synset and the `expression` it belongs to. Only when the

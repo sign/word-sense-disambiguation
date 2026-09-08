@@ -16,8 +16,6 @@ import glob
 import json
 import multiprocessing as mp
 import os
-import shutil
-import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -29,23 +27,6 @@ def _to_dict(result) -> dict:
     """Flat dataclasses -> dict; ``dataclasses.asdict`` recursion costs ~0.25 ms per sentence."""
     return {"tokens": [vars(t) for t in result.tokens], "entities": [vars(e) for e in result.entities]}
 
-def _start_mps() -> None:
-    """Start CUDA MPS for this node so the spaCy process and the model process on
-    each GPU share it concurrently instead of time-slicing contexts (measured:
-    model +9%, spaCy +10% when both run on one H100). Rank 0 starts the daemon,
-    the others wait for it; a missing binary leaves things as is."""
-    if not shutil.which("nvidia-cuda-mps-control"):
-        return
-    os.environ.setdefault("CUDA_MPS_PIPE_DIRECTORY", "/tmp/wsd-mps-pipe")
-    os.environ.setdefault("CUDA_MPS_LOG_DIRECTORY", "/tmp/wsd-mps-log")
-    for d in (os.environ["CUDA_MPS_PIPE_DIRECTORY"], os.environ["CUDA_MPS_LOG_DIRECTORY"]):
-        os.makedirs(d, exist_ok=True)
-    if int(os.environ.get("LOCAL_RANK", 0)) == 0:
-        subprocess.run(["nvidia-cuda-mps-control", "-d"], check=False, capture_output=True)  # no-op if running
-    time.sleep(3)  # let the daemon come up before any process touches CUDA
-
-
-_start_mps()
 # Each rank is an independent single-GPU worker (spaCy's transformer and the
 # WSD model must share a device); must run before torch/cupy are imported.
 RANK, WORLD = detach_from_torchrun()
@@ -96,16 +77,11 @@ def _spacy_worker(paths: list[str], batch_size: int, entities: bool, queue: mp.Q
                   worker: int, workers: int, skip_single_sense: bool) -> None:
     """Parse every ``workers``-th batch of each file and hand picklable docs to the model process.
 
-    Runs in its own process (spawned, so it gets its own CUDA/cupy context on the
-    same GPU): in one process spaCy and the model fight over the GIL and nothing
-    overlaps. spaCy is mostly Python/CPU-bound with a small GPU footprint, so
-    several workers per GPU scale it; the consumer round-robins their queues,
-    which keeps the output in input order. Workers live for all of a rank's
-    files: loading the pipeline costs ~15 s, too much to pay per file.
+    Runs in its own process: in one process spaCy and the model would fight over the GIL and
+    nothing overlaps. spaCy (CPU) and the lookups are Python-bound, so several workers per GPU scale
+    them; the consumer round-robins their queues, which keeps the output in input order. Workers
+    live for all of a rank's files: loading the pipeline costs seconds, too much to pay per file.
     """
-    # Under MPS, confine this client to a share of the SMs: spaCy's ~50k tiny kernels per 3k sentences otherwise
-    # take the whole GPU in turns with the model. Must be set before the CUDA context is created.
-    os.environ.setdefault("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", "25")
     from wsd.spacy_utils import run_spacy_pipe
 
     for path in paths:
