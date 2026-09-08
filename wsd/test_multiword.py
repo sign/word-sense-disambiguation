@@ -37,16 +37,17 @@ def fake_model(monkeypatch):
     calls = []
 
     def batch(inputs):
-        calls.append([(i.word, i.marked_sentence) for i in inputs])
+        words = [i.marked_sentence.split("*")[1] for i in inputs]
+        calls.append(list(zip(words, [i.marked_sentence for i in inputs], strict=True)))
         return [
-            wsd.DisambiguationResult("", NONE_OF_THE_ABOVE, 0.9) if i.word == "hot dogs"  # compound reading rejected
+            wsd.DisambiguationResult("", NONE_OF_THE_ABOVE, 0.9) if word == "hot dogs"  # compound reading rejected
             else wsd.DisambiguationResult(i.definitions[0].synset_id, i.definitions[0].definition, 0.8)
-            for i in inputs
+            for word, i in zip(words, inputs, strict=True)
         ]
 
     monkeypatch.setattr(wsd, "disambiguate_word_batch", batch)
     monkeypatch.setattr(wsd, "get_definitions", lambda queries: [DEFS.get((q.form, q.pos), []) for q in queries])
-    monkeypatch.setattr("wsd.multiword._index", lambda language="en": INDEX)
+    monkeypatch.setattr("wsd.multiword._index", lambda: INDEX)
     return calls
 
 

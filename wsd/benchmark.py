@@ -96,6 +96,33 @@ def collect_wordnet_examples():
                     )
 
 
+def split(
+    n_eval: int = 1000, seed: int = 42
+) -> tuple[list[WordNetExample], list[WordNetExample]]:
+    """Return (eval_examples, benchmark_examples) disjoint at the synset level.
+
+    Examples sharing a ``synset_id`` are never split across the two sets, so the
+    benchmark measures generalization to synsets unseen during training-time eval.
+    """
+    by_synset: dict[str, list[WordNetExample]] = {}
+    for ex in collect_wordnet_examples():
+        by_synset.setdefault(ex.synset_id, []).append(ex)
+
+    synset_ids = list(by_synset.keys())
+    rng = random.Random(seed)
+    rng.shuffle(synset_ids)
+
+    eval_examples: list[WordNetExample] = []
+    benchmark_examples: list[WordNetExample] = []
+    for sid in synset_ids:
+        group = by_synset[sid]
+        if len(eval_examples) < n_eval:
+            eval_examples.extend(group)
+        else:
+            benchmark_examples.extend(group)
+    return eval_examples, benchmark_examples
+
+
 def evaluate(examples: list[WordNetExample], batch_size: int = 64, failures_path: str | None = None,
              progress: bool = True) -> tuple[int, int, float]:
     """Return ``(correct, total, seconds)`` over ``examples``; optionally dump misses as JSONL."""
@@ -106,7 +133,7 @@ def evaluate(examples: list[WordNetExample], batch_size: int = 64, failures_path
         batch = examples[i:i + batch_size]
         all_definitions = get_definitions([WordQuery(form=ex.lemma, pos=ex.pos) for ex in batch])
         batch_data = [
-            DisambiguationInput(word=ex.word_form, marked_sentence=ex.marked_text, definitions=defs)
+            DisambiguationInput(marked_sentence=ex.marked_text, definitions=defs)
             for ex, defs in zip(batch, all_definitions, strict=True)
         ]
         predictions = disambiguate_word_batch(batch_data)
@@ -147,8 +174,6 @@ def main():
     elif args.split == "all":
         examples = list(collect_wordnet_examples())
     else:
-        from training.wn_data import split
-
         eval_examples, benchmark_examples = split(n_eval=args.n_eval, seed=args.seed)
         examples = eval_examples if args.split == "eval" else benchmark_examples
     random.Random(args.seed).shuffle(examples)  # varied batches; deterministic

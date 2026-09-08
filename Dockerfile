@@ -13,24 +13,17 @@ WORKDIR /app
 COPY pyproject.toml .
 RUN mkdir wsd && touch wsd/__init__.py && touch /app/README.md
 
-# Install Python dependencies. torch arrives via accelerate/spacy-transformers
-# with its CUDA runtime bundled as pip wheels, so no CUDA base image is needed.
-# cupy-cuda13x matches torch's bundled CUDA 13 and accelerates spaCy on GPU.
-RUN pip install --no-cache-dir ".[web]" cupy-cuda13x
-
-# torch is unpinned, so a future release may bundle a different CUDA major and
-# silently break the cupy pairing (spacy would fall back to CPU at runtime).
-# Fail the build instead. Works without a GPU.
-RUN python -c "import re, torch; from importlib.metadata import distributions; \
-cupy = next(d.metadata['Name'] for d in distributions() if d.metadata['Name'].startswith('cupy-cuda')); \
-tm = torch.version.cuda.split('.')[0]; cm = re.search('cuda([0-9]+)', cupy).group(1); \
-assert tm == cm, f'CUDA major mismatch: torch {torch.version.cuda} vs {cupy}'"
+# Install Python dependencies. torch arrives via spacy-transformers with its CUDA runtime bundled
+# as pip wheels, so no CUDA base image is needed. spaCy runs on the CPU here (no cupy: ~1 GB less
+# image); the cluster batch image adds cupy in wsd/Enrootfile.sh. Compiled caches are dropped.
+RUN pip install --no-cache-dir ".[web]" && find /opt/venv -name "__pycache__" -type d -exec rm -rf {} + \
+    && find /opt/venv -name "*.pyc" -delete && rm -rf /opt/venv/lib/python3.12/site-packages/*/tests
 
 # Download the models before the code copy, so these heavy layers (and the
 # venv layer, which the spaCy entity-linker KB is written into) stay identical
 # across code-only changes and registries/Cloud Run can reuse them.
 RUN python -c "import spacy; spacy.load('en_core_web_trf'); from spacy_entity_linker.DatabaseConnection import get_wikidata_instance; get_wikidata_instance()"
-# The model name mirrors _DEFAULT_MODEL in wsd/masked_language_model.py; it is
+# The model name mirrors DEFAULT_MODEL in wsd/masked_language_model.py; it is
 # repeated here so the download can run before the code copy (keep in sync).
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('sign/Ettin-150m-WSD')"
 
@@ -49,9 +42,7 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/opt/hf-cache \
     PATH="/opt/venv/bin:$PATH"
 
-# Run as a non-root user; --create-home gives runtime caches (e.g. cupy's
-# kernel cache in ~/.cupy) a writable location.
-RUN useradd --create-home --uid 1000 app
+RUN useradd --create-home --uid 1000 app  # non-root; the home holds runtime caches
 
 # Largest and most stable layers first, so code-only rebuilds reuse them.
 COPY --from=builder --chown=app:app /opt/venv /opt/venv

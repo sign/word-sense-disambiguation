@@ -13,6 +13,7 @@ enroot create -n "$NAME" "$BASE"
 enroot start --root --rw "$NAME" bash -c '
   set -Eeuo pipefail
   apt-get update -qq && apt-get install -y -qq gcc git && rm -rf /var/lib/apt/lists/*  # gcc: triton (torch.compile); git: clone the API
+  /opt/venv/bin/pip install --no-cache-dir cupy-cuda13x  # spaCy on the GPU (the serving image runs it on the CPU)
   # WordNet API, built like https://github.com/sign/wn/blob/main/Dockerfile (ghcr.io/sign/wn), so jobs can
   # start it locally when WORDNET_URL is unset (see wsd/env.py).
   git clone --depth 1 https://github.com/sign/wn /opt/wn

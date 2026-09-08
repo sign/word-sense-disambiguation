@@ -4,7 +4,6 @@ from wsd.masked_language_model import (
     PromptMaskError,
     UnmaskResult,
     load_model,
-    unmask_token,
     unmask_token_batch,
 )
 
@@ -16,6 +15,10 @@ def _mc_prompt(mask_token: str, correct: str) -> str:
         f"Letter to pick: {correct}\n"
         f"Answer: [unused0] {mask_token}"
     )
+
+
+def unmask_token(text):
+    return unmask_token_batch([text])[0]
 
 
 def test_load_model():

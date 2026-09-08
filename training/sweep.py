@@ -50,8 +50,7 @@ def main():
         return
 
     os.environ["WSD_MODEL"] = str(final)
-    from training.wn_data import split
-    from wsd.benchmark import evaluate
+    from wsd.benchmark import evaluate, split
 
     eval_examples, _ = split(n_eval=5000, seed=42)
     correct, total, seconds = evaluate(eval_examples, batch_size=64, failures_path=str(out_dir / "failures.jsonl"))

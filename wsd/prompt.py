@@ -50,12 +50,6 @@ def mark_word_in_sentence(sentence: str, word: str) -> str:
     return marked
 
 
-class OptionLetterIndexError(ValueError):
-    """Raised when index is too large for option letter"""
-    def __init__(self, index: int):
-        super().__init__(f"Index too large for option letter {index}")
-
-
 @dataclass
 class Definition:
     """A single word definition from WordNet"""
@@ -63,24 +57,8 @@ class Definition:
     definition: str
 
 
-def create_marked_sentence(doc, target_position: int) -> str:
-    """Create sentence with target word marked with asterisks"""
-    text = ""
-    for token in doc:
-        if token.i == target_position:
-            text += f"*{token.text}*"
-        else:
-            text += token.text
-        text += token.whitespace_
-    return text
-
-
-def create_multiple_choice_prompt(word: str,
-                                  mask_token: str,
-                                  marked_sentence: str,
-                                  definitions: list[Definition],
-                                  tokenizer: PreTrainedTokenizerBase,
-                                  start_offset: int = 0) -> str:
+def create_multiple_choice_prompt(mask_token: str, marked_sentence: str, definitions: list[Definition],
+                                  tokenizer: PreTrainedTokenizerBase, start_offset: int = 0) -> str:
     """Create multiple choice prompt for word sense disambiguation.
 
     ``definitions[i]`` is rendered with letter ``start_offset + i``; the
@@ -95,7 +73,7 @@ def create_multiple_choice_prompt(word: str,
     """
     letters = build_letters(tokenizer).letters
     if start_offset < 0 or start_offset + len(definitions) > NOTA_LETTER_INDEX:
-        raise OptionLetterIndexError(start_offset + len(definitions))
+        raise ValueError(f"options run into the reserved slot: offset {start_offset} + {len(definitions)} options")
 
     choices = []
     for i, definition_obj in enumerate(definitions):

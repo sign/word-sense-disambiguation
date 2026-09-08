@@ -24,9 +24,9 @@ class MultiwordSpan:
 
 
 @cache
-def _index(language: str = "en") -> dict[str, dict[tuple[str, ...], str]]:
+def _index() -> dict[str, dict[tuple[str, ...], str]]:
     """``first lowercase token -> {lowercase token tuple: canonical form}`` for every multiword form."""
-    url = f"{WORDNET_URL}/lexicons/omw-{language}:1.4/forms"
+    url = f"{WORDNET_URL}/lexicons/omw-en:1.4/forms"
     try:
         forms = requests.get(url, timeout=120).json()["data"]
     except (requests.RequestException, ValueError, KeyError) as e:
@@ -40,10 +40,10 @@ def _index(language: str = "en") -> dict[str, dict[tuple[str, ...], str]]:
     return index
 
 
-def find_spans(doc, language: str = "en") -> list[MultiwordSpan]:
+def find_spans(doc) -> list[MultiwordSpan]:
     """Greedy, longest-first, non-overlapping matches of WordNet multiword forms in a
     spaCy (or light) doc, on lemmas or on lowercased surface tokens."""
-    index = _index(language)
+    index = _index()
     tokens = list(doc)
     lemmas = [t.lemma_.lower() for t in tokens]
     lowers = [t.text.lower() for t in tokens]
@@ -71,8 +71,8 @@ def find_spans(doc, language: str = "en") -> list[MultiwordSpan]:
     return spans
 
 
-def _head_index(token) -> int:
-    return token.head_i if hasattr(token, "head_i") else token.head.i
+def _head_i(token) -> int:  # spaCy Token.head.i or LightToken.head_i
+    return getattr(token, "head_i", None) if hasattr(token, "head_i") else token.head.i
 
 
 def _head(span, start: int, tokens) -> int | None:
@@ -90,6 +90,6 @@ def _head(span, start: int, tokens) -> int | None:
     for j, t in enumerate(span):
         if start + j == verb:
             continue
-        if _head_index(t) != verb or any(_head_index(o) == start + j for k, o in enumerate(tokens) if k not in inside):
+        if _head_i(t) != verb or any(_head_i(o) == start + j for k, o in enumerate(tokens) if k not in inside):
             return None
     return verb

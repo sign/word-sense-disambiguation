@@ -9,12 +9,10 @@ authors = [
 readme = "README.md"
 dependencies = [
     "transformers",
-    "accelerate",
-    "tqdm",
+    "requests",
     "spacy",
     "spacy-entity-linker",
     "en_core_web_trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl",
-    "python-dotenv",
 ]
 
 [project.optional-dependencies]
@@ -31,7 +29,8 @@ web = [
 ]
 
 benchmark = [
-    "wn"
+    "wn",
+    "tqdm",
 ]
 
 [tool.setuptools]
@@ -54,9 +53,7 @@ select = [
     "B", # flake8-bugbear
     "C4", # flake8-comprehensions
     "PT", # flake8-pytest-style
-    "W605", # invalid escape sequence
     "BLE", # flake8-blind-except
-    "TRY", # tryceratops
 ]
 
 [tool.pytest.ini_options]
