@@ -1,13 +1,13 @@
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import requests
 
 from wsd.env import WORDNET_URL
 from wsd.letters import NOTA_LETTER_INDEX
 from wsd.masked_language_model import load_model, unmask_token_batch
-from wsd.multiword import MultiwordSpan, find_spans
+from wsd.multiword import find_spans
 from wsd.prompt import (
     NONE_OF_THE_ABOVE,
     Definition,
@@ -392,62 +392,158 @@ def _extract_entities(doc) -> list[Entity]:
     return entities
 
 
-def _span_pos(doc, span: MultiwordSpan) -> str:
-    return _SPACY_TO_WORDNET_POS.get(doc[span.head].pos_, "n")
+@dataclass
+class _Unit:
+    """One thing to disambiguate: a WordNet multiword span or a single word (token range ``[start, end)``
+    of doc ``doc``). A span carries its ``words`` as fallback units, run when the compound reading is rejected."""
+    doc: int
+    start: int
+    end: int
+    definitions: list[Definition]
+    expression: str | None = None  # the WordNet multiword form, None for a single word
+    words: list["_Unit"] = field(default_factory=list)
 
 
-# (doc index, token range [a, b), multiword form or None, candidate definitions)
-_Unit = tuple[int, tuple[int, int], str | None, list[Definition]]
+def _units(docs, per_doc) -> list[_Unit]:
+    """Phase-1 units for all docs, with every definition fetched in one lookup: each WordNet
+    multiword span (its words attached as fallbacks) and each content word outside a span.
+    A span whose form has no definitions for its POS is replaced by its words right away."""
+    span_queries: list[WordQuery] = []
+    span_units: list[_Unit] = []
+    word_queries: list[WordQuery] = []
+    word_slots: list[tuple[int, int, list[_Unit]]] = []  # (doc, token, list the word unit joins)
+    units: list[_Unit] = []
+    for d, (doc, (tokens, content_idx)) in enumerate(zip(docs, per_doc, strict=True)):
+        owner: dict[int, _Unit] = {}
+        for span in find_spans(doc):
+            unit = _Unit(d, span.start, span.end, [], span.form)
+            span_queries.append(WordQuery(form=span.form, pos=_SPACY_TO_WORDNET_POS.get(doc[span.head].pos_, "n")))
+            span_units.append(unit)
+            units.append(unit)
+            owner.update(dict.fromkeys(range(span.start, span.end), unit))
+        for i in content_idx:
+            word_queries.append(WordQuery(form=tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[tokens[i].pos]))
+            word_slots.append((d, i, owner[i].words if i in owner else units))
+    definitions = get_definitions(span_queries + word_queries)
+    for unit, defs in zip(span_units, definitions[:len(span_units)], strict=True):
+        unit.definitions = defs
+    for (d, i, target), defs in zip(word_slots, definitions[len(span_units):], strict=True):
+        if defs:
+            target.append(_Unit(d, i, i + 1, defs))
+    return [w for u in units for w in ([u] if u.definitions else u.words)]
 
 
-def _units(docs, per_doc, spans_per_doc) -> tuple[list[_Unit], list[tuple[int, int]]]:
-    """Phase-1 units: every WordNet multiword span plus the content words outside spans,
-    with their definitions fetched in one lookup. Spans whose form has no definitions
-    for the chosen POS are returned as word-level fallbacks instead."""
+def _mark_span(doc, start: int, end: int) -> str:
+    """Sentence text with tokens ``start:end`` wrapped in one ``*...*`` pair."""
+    text = ""
+    for token in doc:
+        if token.i == start:
+            text += "*"
+        text += token.text
+        if token.i == end - 1:
+            text += "*"
+        text += token.whitespace_
+    return text
+
+
+def _extract_entities(doc) -> list[Entity]:
+    """Extract linked entities from a spaCy doc (empty when the entityLinker pipe is disabled)."""
+    if isinstance(doc, LightDoc):
+        return doc.entities
+    entities = []
+    for ent in getattr(doc._, "linkedEntities", None) or []:
+        span = ent.get_span()
+        entities.append(Entity(
+            id=ent.identifier,
+            start_token=span.start,
+            end_token=span.end - 1,
+            text=ent.label,
+            description=ent.description,
+            url=ent.url,
+        ))
+    return entities
+
+
+@dataclass
+class _Unit:
+    """One thing to disambiguate: a WordNet multiword span or a single word (token range ``[start, end)``
+    of doc ``doc``). A span carries its ``words`` as fallback units, run when the compound reading is rejected."""
+    doc: int
+    start: int
+    end: int
+    definitions: list[Definition]
+    expression: str | None = None  # the WordNet multiword form, None for a single word
+    words: list["_Unit"] = field(default_factory=list)
+
+
+def _units(docs, per_doc) -> list[_Unit]:
+    """Phase-1 units for all docs with their definitions fetched in one lookup: every WordNet
+    multiword span (plus its words as fallbacks) and every content word outside a span."""
     queries: list[WordQuery] = []
-    ranges: list[tuple[int, tuple[int, int], str | None]] = []
-    for d, (doc, (tokens, content_idx), spans) in enumerate(zip(docs, per_doc, spans_per_doc, strict=True)):
+    pending: list[tuple[int, int, int, str | None]] = []  # (doc, start, end, expression) per query
+    for d, (doc, (tokens, content_idx)) in enumerate(zip(docs, per_doc, strict=True)):
         covered: set[int] = set()
-        for span in spans:
-            queries.append(WordQuery(form=span.form, pos=_span_pos(doc, span)))
-            ranges.append((d, (span.start, span.end), span.form))
+        for span in find_spans(doc):
+            queries.append(WordQuery(form=span.form, pos=_SPACY_TO_WORDNET_POS.get(doc[span.head].pos_, "n")))
+            pending.append((d, span.start, span.end, span.form))
             covered.update(range(span.start, span.end))
         for i in content_idx:
-            if i not in covered:
-                queries.append(WordQuery(form=tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[tokens[i].pos]))
-                ranges.append((d, (i, i + 1), None))
+            if i in covered and not any(s <= i < e for _, s, e, x in pending if x and s <= i < e):
+                continue  # (unreachable: covered indices always belong to a pending span)
+            queries.append(WordQuery(form=tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[tokens[i].pos]))
+            pending.append((d, i, i + 1, None))
     units: list[_Unit] = []
-    fallback: list[tuple[int, int]] = []
-    for (d, (a, b), expression), defs in zip(ranges, get_definitions(queries), strict=True):
-        if defs:
-            units.append((d, (a, b), expression, defs))
-        elif expression is not None:
-            fallback.extend((d, i) for i in range(a, b) if _is_content(docs[d][i]))
-    return units, fallback
+    spans: dict[tuple[int, int, int], _Unit] = {}
+    for (d, a, b, expression), defs in zip(pending, get_definitions(queries), strict=True):
+        unit = _Unit(d, a, b, defs, expression)
+        if expression is not None:
+            spans[(d, a, b)] = unit
+            units.append(unit)
+        else:
+            owner = next((u for (dd, s, e), u in spans.items() if dd == d and s <= a < e), None)
+            (owner.words if owner else units).append(unit) if defs else None
+    # a span whose form has no definitions for its POS never reaches the model: its words run in phase 1
+    return [w for u in units if u.expression and not u.definitions for w in u.words] + \
+           [u for u in units if u.definitions]
 
 
-def _run_units(docs, results, units: list[_Unit], skip_single_sense: bool) -> list[tuple[int, tuple[int, int]]]:
-    """Disambiguate units in one model batch, write the answers on their tokens, and
-    return the multiword units answered "none of the above"."""
+def _mark_span(doc, start: int, end: int) -> str:
+    """Sentence text with tokens ``start:end`` wrapped in one ``*...*`` pair."""
+    text = ""
+    for token in doc:
+        if token.i == start:
+            text += "*"
+        text += token.text
+        if token.i == end - 1:
+            text += "*"
+        text += token.whitespace_
+    return text
+
+
+def _run_units(docs, results, units: list[_Unit], skip_single_sense: bool) -> list[_Unit]:
+    """Disambiguate the units in one model batch and write the answers on their tokens.
+    Returns the multiword units the model rejected ("none of the above"); their tokens stay unset."""
     batch: list[DisambiguationInput] = []
     kept: list[_Unit] = []
-    for d, (a, b), expression, defs in units:
-        if skip_single_sense and len(defs) == 1:
-            for tok in results[d].tokens[a:b]:
-                tok.synset_id, tok.synset_definition = defs[0].synset_id, defs[0].definition
-                tok.confidence, tok.expression = 1.0, expression
+    for u in units:
+        if skip_single_sense and len(u.definitions) == 1:
+            for tok in results[u.doc].tokens[u.start:u.end]:
+                tok.synset_id, tok.synset_definition = u.definitions[0].synset_id, u.definitions[0].definition
+                tok.confidence, tok.expression = 1.0, u.expression
             continue
-        word = " ".join(t.text for t in docs[d][a:b])
-        batch.append(DisambiguationInput(word=word, marked_sentence=_mark_span(docs[d], a, b), definitions=defs))
-        kept.append((d, (a, b), expression, defs))
+        word = " ".join(t.text for t in docs[u.doc][u.start:u.end])
+        batch.append(DisambiguationInput(word=word, marked_sentence=_mark_span(docs[u.doc], u.start, u.end),
+                                         definitions=u.definitions))
+        kept.append(u)
     rejected = []
-    for (d, (a, b), expression, _), result in zip(kept, disambiguate_word_batch(batch), strict=True):
-        for tok in results[d].tokens[a:b]:
-            tok.confidence, tok.expression = result.confidence, expression
-            if result.definition != NONE_OF_THE_ABOVE:  # NOTA leaves synset fields None
+    for u, result in zip(kept, disambiguate_word_batch(batch), strict=True):
+        if result.definition == NONE_OF_THE_ABOVE and u.expression is not None:
+            rejected.append(u)  # not the compound reading: the words get their own turn
+            continue
+        for tok in results[u.doc].tokens[u.start:u.end]:
+            tok.confidence, tok.expression = result.confidence, u.expression
+            if result.definition != NONE_OF_THE_ABOVE:  # NOTA leaves the synset fields None
                 tok.synset_id, tok.synset_definition = result.synset_id, result.definition
-        if result.definition == NONE_OF_THE_ABOVE and expression is not None:
-            rejected.append((d, (a, b)))
     return rejected
 
 
@@ -467,20 +563,8 @@ def disambiguate_docs(docs: list, skip_single_sense: bool = False) -> list[WordS
     per_doc = [_create_base_tokens(doc) for doc in docs]
     results = [WordSenseDisambiguation(tokens=tokens, entities=_extract_entities(doc))
                for doc, (tokens, _) in zip(docs, per_doc, strict=True)]
-    units, fallback = _units(docs, per_doc, [find_spans(doc) for doc in docs])
-
-    for d, (a, b) in _run_units(docs, results, units, skip_single_sense):  # rejected expressions
-        for i in range(a, b):
-            results[d].tokens[i].confidence = results[d].tokens[i].expression = None
-            if _is_content(docs[d][i]):
-                fallback.append((d, i))
-    if fallback:
-        word_defs = get_definitions([
-            WordQuery(form=results[d].tokens[i].lemma, pos=_SPACY_TO_WORDNET_POS[results[d].tokens[i].pos])
-            for d, i in fallback
-        ])
-        word_units = [(d, (i, i + 1), None, defs) for (d, i), defs in zip(fallback, word_defs, strict=True) if defs]
-        _run_units(docs, results, word_units, skip_single_sense)
+    rejected = _run_units(docs, results, _units(docs, per_doc), skip_single_sense)
+    _run_units(docs, results, [w for u in rejected for w in u.words], skip_single_sense)
     return results
 
 
