@@ -13,16 +13,16 @@ WORKDIR /app
 COPY pyproject.toml .
 RUN mkdir wsd && touch wsd/__init__.py && touch /app/README.md
 
-# Install Python dependencies. torch arrives via spacy-transformers with its CUDA runtime bundled
-# as pip wheels, so no CUDA base image is needed. spaCy runs on the CPU here (no cupy: ~1 GB less
-# image); the cluster batch image adds cupy in wsd/Enrootfile.sh. Compiled caches are dropped.
+# Install Python dependencies. torch arrives via transformers with its CUDA runtime bundled as pip
+# wheels, so no CUDA base image is needed; spaCy (en_core_web_lg) runs on the CPU. Bytecode caches
+# and package tests are dropped.
 RUN pip install --no-cache-dir ".[web]" && find /opt/venv -name "__pycache__" -type d -exec rm -rf {} + \
     && find /opt/venv -name "*.pyc" -delete && rm -rf /opt/venv/lib/python3.12/site-packages/*/tests
 
 # Download the models before the code copy, so these heavy layers (and the
 # venv layer, which the spaCy entity-linker KB is written into) stay identical
 # across code-only changes and registries/Cloud Run can reuse them.
-RUN python -c "import spacy; spacy.load('en_core_web_trf'); from spacy_entity_linker.DatabaseConnection import get_wikidata_instance; get_wikidata_instance()"
+RUN python -c "import spacy; spacy.load('en_core_web_lg'); from spacy_entity_linker.DatabaseConnection import get_wikidata_instance; get_wikidata_instance()"
 # The model name mirrors DEFAULT_MODEL in wsd/masked_language_model.py; it is
 # repeated here so the download can run before the code copy (keep in sync).
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('sign/Ettin-150m-WSD')"
