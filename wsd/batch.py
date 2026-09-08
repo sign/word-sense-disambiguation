@@ -56,9 +56,13 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 # The BPE tokenizer's rayon pool contends on a shared cache: 224 threads burn 185 CPU-s for a 0.9 s call,
 # 16 threads take 0.22 s. Must be set before `tokenizers` initializes (i.e. before transformers is imported).
 os.environ.setdefault("RAYON_NUM_THREADS", "16")
+# 8 model + 16 spaCy processes on a 224-core node: BLAS/OpenMP pools default to all cores each and the
+# oversubscription randomly stalls one rank's model process for 2-3x per shard. Must precede numpy/torch.
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "4")
 
 from wsd import word_sense_disambiguation  # noqa: E402
-from wsd.word_sense_disambiguation import disambiguate_docs, light_doc  # noqa: E402
+from wsd.word_sense_disambiguation import complete_docs, disambiguate_word_batch, light_doc, prepare_docs  # noqa: E402
 
 # Time spent inside the model call, to split the WSD stage into model vs host work in the per-file log.
 # Patched where it is looked up (word_sense_disambiguation imported the name).
@@ -89,7 +93,7 @@ def _read_batches(src, batch_size: int):
 
 
 def _spacy_worker(paths: list[str], batch_size: int, entities: bool, queue: mp.Queue,
-                  worker: int, workers: int) -> None:
+                  worker: int, workers: int, skip_single_sense: bool) -> None:
     """Parse every ``workers``-th batch of each file and hand picklable docs to the model process.
 
     Runs in its own process (spawned, so it gets its own CUDA/cupy context on the
@@ -111,19 +115,21 @@ def _spacy_worker(paths: list[str], batch_size: int, entities: bool, queue: mp.Q
                     continue
                 t0 = time.time()
                 docs = [light_doc(d) for d in run_spacy_pipe(texts, batch_size=batch_size, entities=entities)]
-                queue.put((texts, docs, time.time() - t0))
+                # lookups and prompt building happen here too: the model process is the host-bound one
+                queue.put((texts, prepare_docs(docs, skip_single_sense), time.time() - t0))
         queue.put(None)  # end of this file for this worker
 
 
 class SpacyPool:
     """``spacy_workers`` persistent spaCy processes feeding batches of the given files, in file order."""
 
-    def __init__(self, paths: list[Path], batch_size: int, entities: bool, spacy_workers: int):
+    def __init__(self, paths: list[Path], batch_size: int, entities: bool, spacy_workers: int,
+                 skip_single_sense: bool):
         ctx = mp.get_context("spawn")
         self.queues = [ctx.Queue(maxsize=2) for _ in range(spacy_workers)]
         self.workers = [
             ctx.Process(target=_spacy_worker, daemon=True,
-                        args=([str(p) for p in paths], batch_size, entities, q, k, spacy_workers))
+                        args=([str(p) for p in paths], batch_size, entities, q, k, spacy_workers, skip_single_sense))
             for k, q in enumerate(self.queues)
         ]
         for w in self.workers:
@@ -169,9 +175,9 @@ def process_file(path: Path, out_path: Path, pool: SpacyPool, skip_single_sense:
     # tokenized (GIL released in Rust) and launched; one worker keeps file order.
     with open(tmp, "w") as out, ThreadPoolExecutor(max_workers=1) as writer:
         writes = []
-        for texts, docs, dt_spacy in pool.batches():
+        for texts, prepared, dt_spacy in pool.batches():
             t1 = time.time()
-            results = disambiguate_docs(docs, skip_single_sense=skip_single_sense)
+            results = complete_docs(prepared, disambiguate_word_batch(prepared.batch), skip_single_sense)
             t2 = time.time()
             writes.append(writer.submit(write, texts, results, out))
             n_sentences += len(texts)
@@ -217,7 +223,7 @@ def main():
     total_sentences = total_prompts = 0
     start = time.time()
     todo = [p for p in files if not (args.output_dir / f"{p.stem}.jsonl").exists()]
-    pool = SpacyPool(todo, args.batch_size, not args.no_entities, args.spacy_workers)
+    pool = SpacyPool(todo, args.batch_size, not args.no_entities, args.spacy_workers, args.skip_single_sense)
     for path in todo:
         s, p = process_file(path, args.output_dir / f"{path.stem}.jsonl", pool, args.skip_single_sense, log)
         total_sentences += s
