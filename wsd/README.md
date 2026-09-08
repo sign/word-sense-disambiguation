@@ -119,7 +119,8 @@ never trained on). Trained on 8xH100 via `training/sweep.py`; configs in `traini
 | **Ettin-1B, lr 2e-5, batch 32x2 (Z1; `sign/Ettin-1B-WSD`; 3.1x the cost of C3)** | **80.3%** | **81.4%** |
 | ModernBERT-large with 8 of 28 layers dropped (Z2; 0.7x the cost)       | 76.5%       | 80.7%       |
 | Ettin-150m, 2 epochs (X8) / distilled from C3, 3 epochs (Y2)           | 74.9% / 75.9% | 79.4% / 80.1% |
-| **Ettin-150m distilled, 3 epochs (Y2; `sign/Ettin-150m-WSD`, the default; 0.44x the cost)** | **75.9%** | **80.1%** |
+| Ettin-150m distilled from C3, 3 epochs (Y2)                            | 75.9%       | 80.1%       |
+| **Ettin-150m distilled from the 1B on labeled data + 1.06M unlabeled Wikipedia prompts, alpha 0.7, 3 epochs (U8; `sign/Ettin-150m-WSD`, the default; 0.44x the cost)** | **75.9%** | **80.8%** |
 | Ettin-68m / 32m / 17m, distilled from the 1B, 3 epochs (S6 / S4 / S2)  | 71.5 / 66.0 / 60.7% | 78.9 / 75.2 / 73.1% |
 
 Recipe for W4: `--wn-train --semcor SemCor/semcor --wngt glosstag --wngt-tags man --sense-index dict/index.sense
@@ -127,12 +128,14 @@ Recipe for W4: `--wn-train --semcor SemCor/semcor --wngt glosstag --wngt-tags ma
 The gloss corpus adds ~0.5 points on both benchmarks; its variants (definitions only, all tags, lr 2e-5/4e-5)
 are within noise of each other; 3 epochs (77.6% / 80.3%) and 1 epoch (77.5% / 79.9%) are both worse than 2.
 
-Round X-T (2026-09-06/07, 8xH100, `training/sweeps/2026-09-0*.json`): the control rerun of C3 gives 78.2% / 80.2%,
+Rounds X-U (2026-09-06/08, 8xH100; the two published recipes are in `training/sweeps/2026-09-08-published.json`): the control rerun of C3 gives 78.2% / 80.2%,
 so seed noise on SemEval ALL is about ±0.4. Within that noise and therefore rejected: keeping WordNet's sense order
 at training time, hypernym lemmas or example sentences appended to definitions (also 40-100% more tokens), 3+ epochs,
 SemCor+OMSTI, the automatically tagged gloss corpus. Real gains: the Ettin-1B encoder (+0.8 on ALL at 3x the cost)
 and soft-target distillation into small encoders (150m: 79.4 → 80.1). Every large-class model plateaus at 80.5-81
-on ALL. The 150m is saturated at 80.0 ± 0.4 (4-5 epochs, lower lr, alpha 0.8, T=1 all tried). Confidence cascades
+on ALL. On labeled data alone the 150m is saturated at 80.0 ± 0.4 (4-5 epochs, lower lr, alpha 0.8, T=1 all tried); adding
+1.06M unlabeled Wikipedia prompts trained on the teacher's distribution only (`--unlabeled-prompts`, prompts from
+`scripts/dump_prompts.py`) lifts it to 80.8 (continued training on the labeled data alone: 79.8). Confidence cascades
 (small model answers, low-confidence prompts go to a large one): 150m → 1B escalating 9% reaches 81.0% at 0.72x the
 cost of C3; the 17m/32m are confidently wrong and do not work as a first stage. Details and graph: `scripts/cascade_suite.py`.
 

@@ -512,8 +512,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--distill-alpha", type=float, default=0.5, help="weight of the KL term vs the label loss")
     parser.add_argument("--distill-temperature", type=float, default=2.0)
     parser.add_argument("--grad-accum", type=int, default=1, help="gradient accumulation steps")
-    parser.add_argument("--drop-layers", type=int, default=0,
-                        help="remove this many top encoder layers before training")
     parser.add_argument("--nodes", type=int, help=argparse.SUPPRESS)  # appended by run_distributed.py
     return parser.parse_args(argv)
 
@@ -571,17 +569,6 @@ def _trainer(args, device) -> tuple[type, dict]:
     return DistillTrainer, {"teacher": teacher, "alpha": args.distill_alpha, "temperature": args.distill_temperature}
 
 
-def _drop_layers(model, n: int) -> None:
-    """Speed experiment: fine-tune a shallower encoder with the top ``n`` layers removed."""
-    if n:
-        keep = len(model.model.layers) - n
-        model.model.layers = model.model.layers[:keep]
-        model.config.num_hidden_layers = keep
-        if getattr(model.config, "layer_types", None):  # config validation checks the two agree
-            model.config.layer_types = list(model.config.layer_types[:keep])
-        print(f"dropped {n} top layers -> {keep} layers")
-
-
 def main(argv: list[str] | None = None):
     """Main training function."""
     args = parse_args(argv)
@@ -632,7 +619,6 @@ def main(argv: list[str] | None = None):
     # Inference uses a parallel path via ``prediction_positions`` in model.py.
     model.sparse_prediction = True
     model.config.label_smoothing = config.label_smoothing  # applied in WSDModernBertForMaskedLM.forward
-    _drop_layers(model, args.drop_layers)
 
     # If we loaded a pristine checkpoint the decoder is still full-vocab; prune
     # it down to the 128 answer-letter rows. When resuming from a previously
