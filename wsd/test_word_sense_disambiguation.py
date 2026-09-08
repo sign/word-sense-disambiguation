@@ -1,10 +1,8 @@
 import pytest
 import requests_mock
-import torch
 
 from wsd.env import WORDNET_URL
 from wsd.masked_language_model import load_model
-from wsd.prompt import create_marked_sentence
 from wsd.word_sense_disambiguation import (
     NO_DEFINITIONS_FOUND,
     NONE_OF_THE_ABOVE,
@@ -13,9 +11,7 @@ from wsd.word_sense_disambiguation import (
     DisambiguationResult,
     WordQuery,
     create_multiple_choice_prompt,
-    disambiguate_word,
     disambiguate_word_batch,
-    get_choice_probabilities,
     get_definitions,
 )
 
@@ -63,11 +59,9 @@ def test_disambiguation_input_dataclass():
         Definition(synset_id="omw-en-5678-n", definition="edge of river"),
     ]
     input_obj = DisambiguationInput(
-        word="bank",
         marked_sentence="I went to the *bank* to withdraw money.",
         definitions=definitions
     )
-    assert input_obj.word == "bank"
     assert len(input_obj.definitions) == 2
 
 
@@ -126,20 +120,6 @@ def test_get_definitions_api_error():
         assert results[0] == []
 
 
-def test_create_marked_sentence(monkeypatch):
-    """Test create_marked_sentence function"""
-
-    import spacy
-
-    # Create a mock spacy doc
-    nlp = spacy.blank("en")
-    doc = nlp("I went to the bank")
-
-    marked = create_marked_sentence(doc, 4)  # Mark "bank"
-    assert "*bank*" in marked
-    assert "I went to the" in marked
-
-
 def test_create_multiple_choice_prompt():
     """Test create_multiple_choice_prompt function"""
     components = load_model()
@@ -149,7 +129,6 @@ def test_create_multiple_choice_prompt():
     ]
 
     prompt = create_multiple_choice_prompt(
-        "bank",
         components.tokenizer.mask_token,
         "I went to the *bank*.",
         definitions,
@@ -165,34 +144,22 @@ def test_create_multiple_choice_prompt():
     assert components.tokenizer.mask_token in prompt
 
 
-def test_get_choice_probabilities():
-    """Test get_choice_probabilities function"""
-    # Compact probs: letter_i is at index i. The NOTA slot lives at the fixed
-    # NOTA_LETTER_INDEX, NOT at index len(definitions).
+def test_result_from_probs():
+    """Option i is letter i; "none of the above" is the fixed last letter; confidence is renormalized."""
     from wsd.letters import NOTA_LETTER_INDEX
-    probs = torch.zeros(128)
-    probs[0] = 0.8
-    probs[1] = 0.1
-    probs[NOTA_LETTER_INDEX] = 0.05
-
-    definitions = [
-        Definition(synset_id="omw-en-1234-n", definition="definition 1"),
-        Definition(synset_id="omw-en-5678-n", definition="definition 2"),
-    ]
-
-    choice_probs = get_choice_probabilities(probs, definitions)
-
-    # Two option probs plus NOTA
-    assert len(choice_probs) == 3
-    assert all(isinstance(p, float) for p in choice_probs)
-    assert choice_probs[0] == pytest.approx(0.8)
-    assert choice_probs[1] == pytest.approx(0.1)
-    assert choice_probs[2] == pytest.approx(0.05)
+    from wsd.word_sense_disambiguation import _result_from_probs
+    probs = [0.0] * 128
+    probs[0], probs[1], probs[NOTA_LETTER_INDEX] = 0.8, 0.1, 0.1
+    definitions = [Definition("a", "definition 1"), Definition("b", "definition 2")]
+    result = _result_from_probs(probs, definitions)
+    assert (result.synset_id, result.confidence) == ("a", pytest.approx(0.8))
+    probs[NOTA_LETTER_INDEX] = 0.9
+    assert _result_from_probs(probs, definitions).definition == NONE_OF_THE_ABOVE
 
 
 def test_disambiguate_word_no_definitions():
     """Test disambiguate_word with no definitions"""
-    result = disambiguate_word("test", "This is a *test*.", [])
+    result = disambiguate_word_batch([DisambiguationInput("This is a *test*.", [])])[0]
 
     assert result.synset_id == NO_DEFINITIONS_FOUND
     assert result.definition == ""
@@ -206,7 +173,7 @@ def test_disambiguate_word_with_definitions():
         Definition(synset_id="omw-en-5678-n", definition="the edge of a river"),
     ]
 
-    result = disambiguate_word("bank", "I went to the *bank* to withdraw money.", definitions)
+    result = disambiguate_word_batch([DisambiguationInput("I went to the *bank* to withdraw money.", definitions)])[0]
 
     # Should return a valid result
     assert isinstance(result, DisambiguationResult)
@@ -224,8 +191,8 @@ def test_disambiguate_word_batch_empty():
 def test_disambiguate_word_batch_no_definitions():
     """Test disambiguate_word_batch when inputs have no definitions"""
     batch_data = [
-        DisambiguationInput(word="test", marked_sentence="This is a *test*.", definitions=[]),
-        DisambiguationInput(word="example", marked_sentence="This is an *example*.", definitions=[]),
+        DisambiguationInput(marked_sentence="This is a *test*.", definitions=[]),
+        DisambiguationInput(marked_sentence="This is an *example*.", definitions=[]),
     ]
 
     results = disambiguate_word_batch(batch_data)
@@ -248,12 +215,10 @@ def test_disambiguate_word_batch_with_definitions():
 
     batch_data = [
         DisambiguationInput(
-            word="bank",
             marked_sentence="I went to the *bank* to withdraw money.",
             definitions=definitions1
         ),
         DisambiguationInput(
-            word="run",
             marked_sentence="I need to *run* to catch the bus.",
             definitions=definitions2
         ),
@@ -277,12 +242,10 @@ def test_disambiguate_word_batch_mixed():
 
     batch_data = [
         DisambiguationInput(
-            word="bank",
             marked_sentence="I went to the *bank*.",
             definitions=definitions
         ),
         DisambiguationInput(
-            word="xyz",
             marked_sentence="This is *xyz*.",
             definitions=[]
         ),
@@ -305,21 +268,3 @@ def test_constants():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
-
-def test_nota_threshold_env(monkeypatch):
-    """WSD_NOTA_THRESHOLD makes NOTA need a minimum share of the valid-choice mass."""
-    from wsd.letters import NOTA_LETTER_INDEX
-    from wsd.word_sense_disambiguation import _result_from_probs
-
-    probs = torch.zeros(128)
-    probs[0], probs[1], probs[NOTA_LETTER_INDEX] = 0.3, 0.2, 0.5
-    definitions = [Definition("a", "x"), Definition("b", "y")]
-    monkeypatch.delenv("WSD_NOTA_THRESHOLD", raising=False)
-    assert _result_from_probs(probs, definitions).definition == NONE_OF_THE_ABOVE
-    monkeypatch.setenv("WSD_NOTA_THRESHOLD", "0.6")
-    result = _result_from_probs(probs, definitions)
-    assert result.synset_id == "a"
-    assert abs(result.confidence - 0.3) < 1e-6
-    monkeypatch.setenv("WSD_NOTA_THRESHOLD", "0.4")
-    assert _result_from_probs(probs, definitions).definition == NONE_OF_THE_ABOVE

@@ -5,22 +5,6 @@ import subprocess
 import sys
 import time
 import urllib.request
-from pathlib import Path
-
-from dotenv import load_dotenv
-
-
-class MissingEnvironmentVariableError(Exception):
-    """Raised when a required environment variable is missing."""
-
-    def __init__(self, variable_name: str):
-        self.variable_name = variable_name
-        super().__init__(f"Missing required environment variable: {variable_name}")
-
-
-# Load .env file from project root
-env_path = Path(__file__).parent.parent / ".env"
-load_dotenv(env_path)
 
 
 def start_local_wordnet_api(timeout: float = 120.0) -> str:
@@ -51,7 +35,7 @@ def start_local_wordnet_api(timeout: float = 120.0) -> str:
             if proc.poll() is not None:
                 break
             time.sleep(0.5)
-    raise RuntimeError("local WordNet API did not become healthy")  # noqa: TRY003
+    raise RuntimeError("local WordNet API did not become healthy")
 
 
 # URL of the WordNet API server (ghcr.io/sign/wn). When unset and the API package
@@ -61,7 +45,7 @@ if not WORDNET_URL:
     try:
         WORDNET_URL = start_local_wordnet_api()
     except ImportError:
-        raise MissingEnvironmentVariableError("WORDNET_URL") from None
+        raise RuntimeError("WORDNET_URL is not set and the WordNet API package is not installed") from None
     os.environ["WORDNET_URL"] = WORDNET_URL
 
 

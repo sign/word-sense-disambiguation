@@ -23,11 +23,6 @@ from wsd.letters import LetterSet, build_letters
 from wsd.model import WSDModernBertForMaskedLM
 
 
-class UnexpectedDecoderTypeError(TypeError):
-    def __init__(self, actual: type):
-        super().__init__(f"expected nn.Linear decoder, got {actual.__name__}")
-
-
 def prune_decoder(model: ModernBertForMaskedLM, tokenizer: PreTrainedTokenizerBase) -> LetterSet:
     """Prune ``model.decoder`` to the rows corresponding to answer-letter tokens.
 
@@ -46,7 +41,7 @@ def prune_decoder(model: ModernBertForMaskedLM, tokenizer: PreTrainedTokenizerBa
 
     decoder = model.decoder
     if not isinstance(decoder, nn.Linear):
-        raise UnexpectedDecoderTypeError(type(decoder))
+        raise TypeError(f"expected nn.Linear decoder, got {type(decoder).__name__}")
 
     hidden = decoder.in_features
     n_out = len(allowed_ids)

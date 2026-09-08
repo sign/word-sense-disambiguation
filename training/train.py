@@ -6,6 +6,7 @@ by treating it as a multiple-choice classification task using masked language mo
 """
 
 import argparse
+import functools
 import io
 import json
 import os
@@ -28,8 +29,8 @@ from transformers import (
     TrainingArguments,
 )
 
-from training.wn_data import WordNetExample
-from training.wn_data import split as split_wn_examples
+from wsd.benchmark import WordNetExample
+from wsd.benchmark import split as split_wn_examples
 from wsd.letters import NOTA_LETTER_INDEX, LetterSet, build_letters
 from wsd.masked_language_model import attn_implementation
 from wsd.model import WSDModernBertForMaskedLM
@@ -43,49 +44,8 @@ from wsd.prompt import (
 )
 from wsd.word_sense_disambiguation import WordQuery, get_definitions
 
-# Constants
-DEFAULT_MODEL = "answerdotai/ModernBERT-Large-Instruct"
-DEFAULT_MAX_LENGTH = 2048
-DEFAULT_BATCH_SIZE = 64
-DEFAULT_LEARNING_RATE = 3e-5
-DEFAULT_WARMUP_RATIO = 0.1
-DEFAULT_RANDOM_SEED = 42
-DEFAULT_WEIGHT_DECAY = 0.0
-DEFAULT_LABEL_SMOOTHING = 0.0
-DEFAULT_LR_SCHEDULER = "linear"
-NONE_SUFFIX = "_none"
-
-
-@dataclass
-class TrainingConfig:
-    """Configuration for training."""
-    model_name: str = DEFAULT_MODEL
-    data_dir: Path = Path(__file__).parent / "data" / "generated.tar.xz"
-    output_dir: Path = Path(__file__).parent / "output"
-    max_length: int = DEFAULT_MAX_LENGTH
-    num_epochs: int = 1
-    batch_size: int = DEFAULT_BATCH_SIZE
-    learning_rate: float = DEFAULT_LEARNING_RATE
-    warmup_ratio: float = DEFAULT_WARMUP_RATIO
-    random_seed: int = DEFAULT_RANDOM_SEED
-    report_to: str = "wandb"
-    max_steps: int = -1  # -1 means no limit (train full epochs)
-    eval_steps: int = 500  # run eval every N steps
-    eval_wn_count: int = 5000  # held-out wn examples used as eval set
-    eval_wn_seed: int = 42  # seed controlling wn eval/benchmark split
-    wn_train: bool = False  # also train on the non-held-out WordNet examples
-    semcor: Path | None = None  # Raganato-format corpus prefix to add to training (e.g. .../SemCor/semcor)
-    nota_examples: bool = True  # include the one cross-POS "none of the above" example per word
-    wngt: Path | None = None  # WordNet gloss corpus `glosstag` dir to add to training
-    unlabeled_prompts: Path | None = None  # jsonl of {"prompt": ...} rows trained with the teacher's distribution only
-    wngt_parts: str = "def,ex"  # which gloss parts to use
-    wngt_tags: str = "man,auto"  # which tag qualities to use
-    sense_index: Path | None = None  # WordNet 3.0 index.sense, needed with --semcor
-    weight_decay: float = DEFAULT_WEIGHT_DECAY
-    label_smoothing: float = DEFAULT_LABEL_SMOOTHING
-    lr_scheduler: str = DEFAULT_LR_SCHEDULER
-
-
+MAX_LENGTH = 2048
+EVAL_WN_SEED = 42  # the held-out WordNet split; `python -m wsd.benchmark --split eval` uses the same seed
 UNLABELED = -1  # label at the mask position of a prompt that only has a teacher distribution
 
 
@@ -141,7 +101,6 @@ def _augmented_example(
         correct_idx = next(i for i, d in enumerate(definitions) if d.synset_id == correct_synset_id)
         correct_letter = letters[start_offset + correct_idx]
     prompt = create_multiple_choice_prompt(
-        word=word,
         mask_token=tokenizer.mask_token,
         marked_sentence=marked_sentence,
         definitions=definitions,
@@ -204,7 +163,7 @@ def create_none_of_above_example(
     other_pos_synsets = [s for s in all_synsets if _pos_group(s["pos"]) != most_frequent_group]
     candidate_sentences = [(s, ex) for s in other_pos_synsets for ex in s["examples"]]
     random.shuffle(candidate_sentences)
-    for s, sentence in candidate_sentences:
+    for _, sentence in candidate_sentences:
         try:
             marked_sentence = mark_word_in_sentence(sentence, word)
         except (WordNotFoundError, SentenceAlreadyMarkedError):
@@ -217,7 +176,6 @@ def create_none_of_above_example(
             for syn in all_synsets if _pos_group(syn["pos"]) == most_frequent_group
         ]
         example = _augmented_example(word, sentence, marked_sentence, definitions, None, tokenizer)
-        example.correct_synset_id = f"{s['id']}{NONE_SUFFIX}"
         return example
     return None
 
@@ -251,7 +209,6 @@ def build_examples_from_wn(
             continue
         correct_idx = next(i for i, d in enumerate(definitions) if d.synset_id == ex.synset_id)
         prompt = create_multiple_choice_prompt(
-            word=ex.word_form,
             mask_token=tokenizer.mask_token,
             marked_sentence=ex.marked_text,
             definitions=definitions,
@@ -315,7 +272,7 @@ def load_training_data(data_path: Path, tokenizer: PreTrainedTokenizer,
 
 
 def build_examples(
-    config: TrainingConfig, tokenizer: PreTrainedTokenizer,
+    args: argparse.Namespace, tokenizer: PreTrainedTokenizer,
 ) -> tuple[list[TrainingExample], list[TrainingExample]]:
     """Return ``(training_examples, eval_examples)``: generated data (+ optionally
     the non-held-out WordNet examples) and the held-out WordNet eval slice.
@@ -323,46 +280,46 @@ def build_examples(
     ``wsd.benchmark --split eval`` uses the same split/seed, so eval metrics
     track the final benchmark accuracy without leaking.
     """
-    print(f"\nLoading training data from: {config.data_dir}")
-    training_examples = load_training_data(config.data_dir, tokenizer, config.nota_examples)
+    print(f"\nLoading training data from: {args.data_dir}")
+    training_examples = load_training_data(args.data_dir, tokenizer, (not args.no_nota_examples))
 
     eval_examples: list[TrainingExample] = []
     wn_eval: list[WordNetExample] = []
-    if config.eval_wn_count > 0 or config.wn_train:
-        wn_eval, wn_rest = split_wn_examples(n_eval=config.eval_wn_count, seed=config.eval_wn_seed)
-        if config.eval_wn_count > 0:
+    if args.eval_wn_count > 0 or args.wn_train:
+        wn_eval, wn_rest = split_wn_examples(n_eval=args.eval_wn_count, seed=EVAL_WN_SEED)
+        if args.eval_wn_count > 0:
             eval_examples = build_examples_from_wn(wn_eval, tokenizer)
             print(f"Held out {len(eval_examples)} wn examples as eval "
-                  f"(requested {config.eval_wn_count}, seed {config.eval_wn_seed})")
-        if config.wn_train:
+                  f"(requested {args.eval_wn_count}, seed {EVAL_WN_SEED})")
+        if args.wn_train:
             wn_train_examples = build_examples_from_wn(wn_rest, tokenizer, augment=True)
             print(f"Adding {len(wn_train_examples)} non-held-out wn examples to training")
             training_examples.extend(wn_train_examples)
 
-    if config.semcor:
+    if args.semcor:
         from training.semcor import load_raganato, load_sense_index
 
         semcor_examples = build_examples_from_wn(
-            load_raganato(config.semcor, load_sense_index(config.sense_index)), tokenizer, augment=True,
+            load_raganato(args.semcor, load_sense_index(args.sense_index)), tokenizer, augment=True,
         )
-        print(f"Adding {len(semcor_examples)} examples from {config.semcor}")
+        print(f"Adding {len(semcor_examples)} examples from {args.semcor}")
         training_examples.extend(semcor_examples)
-    if config.unlabeled_prompts:
-        with open(config.unlabeled_prompts) as f:
+    if args.unlabeled_prompts:
+        with open(args.unlabeled_prompts) as f:
             unlabeled = [TrainingExample("", "", "", "", "", json.loads(line)["prompt"]) for line in f]
-        print(f"Adding {len(unlabeled)} unlabeled prompts from {config.unlabeled_prompts} (teacher-only loss)")
+        print(f"Adding {len(unlabeled)} unlabeled prompts from {args.unlabeled_prompts} (teacher-only loss)")
         training_examples.extend(unlabeled)
-    if config.wngt:
+    if args.wngt:
         from training.semcor import load_sense_index
         from training.wngt import load_wngt
 
-        held_out = frozenset(ex.synset_id for ex in wn_eval) if config.eval_wn_count > 0 else frozenset()
+        held_out = frozenset(ex.synset_id for ex in wn_eval) if args.eval_wn_count > 0 else frozenset()
         wngt_examples = build_examples_from_wn(
-            load_wngt(config.wngt, load_sense_index(config.sense_index), parts=frozenset(config.wngt_parts.split(",")),
-                      tags=frozenset(config.wngt_tags.split(",")), exclude_synsets=held_out),
+            load_wngt(args.wngt, load_sense_index(args.sense_index), parts=frozenset(args.wngt_parts.split(",")),
+                      tags=frozenset(args.wngt_tags.split(",")), exclude_synsets=held_out),
             tokenizer, augment=True,
         )
-        print(f"Adding {len(wngt_examples)} gloss-corpus examples from {config.wngt}")
+        print(f"Adding {len(wngt_examples)} gloss-corpus examples from {args.wngt}")
         training_examples.extend(wngt_examples)
 
     random.shuffle(training_examples)
@@ -378,33 +335,19 @@ class WSDDataset(Dataset):
         examples: list[TrainingExample],
         tokenizer: PreTrainedTokenizer,
         letter_set: LetterSet,
-        max_length: int = DEFAULT_MAX_LENGTH
+        max_length: int = MAX_LENGTH
     ):
         self.tokenizer = tokenizer
         self.letter_to_compact = {letter: i for i, letter in enumerate(letter_set.letters)}
         self.max_length = max_length
 
-        # Filter out examples whose prompt has no mask token after truncation.
-        # A mask-less example produces all-(-100) labels, which contributes
-        # nothing to the loss but still costs a full forward pass.
+        # Drop prompts whose mask token does not survive truncation (they would cost a forward pass for nothing).
         mask_id = tokenizer.mask_token_id
-        kept: list[TrainingExample] = []
-        dropped = 0
-        for ex in examples:
-            input_ids = tokenizer(
-                ex.prompt, truncation=True, max_length=max_length,
-            )["input_ids"]
-            if mask_id in input_ids:
-                kept.append(ex)
-            else:
-                dropped += 1
-        if dropped:
-            warnings.warn(
-                f"Dropped {dropped}/{len(examples)} WSD example(s) whose prompt "
-                f"has no mask token after truncation to max_length={max_length}",
-                stacklevel=2,
-            )
-        self.examples = kept
+        self.examples = [ex for ex in examples
+                         if mask_id in tokenizer(ex.prompt, truncation=True, max_length=max_length)["input_ids"]]
+        if len(self.examples) < len(examples):
+            warnings.warn(f"Dropped {len(examples) - len(self.examples)} example(s) whose prompt has no mask token "
+                          f"after truncation to max_length={max_length}", stacklevel=2)
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -431,65 +374,31 @@ class WSDDataset(Dataset):
         }
 
 
-class WSDDataCollator:
-    """Custom data collator that pads to longest sequence in batch."""
-
-    def __init__(self, tokenizer: PreTrainedTokenizer):
-        self.tokenizer = tokenizer
-
-    def __call__(self, features: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
-        input_ids = [torch.tensor(f["input_ids"]) for f in features]
-        attention_mask = [torch.tensor(f["attention_mask"]) for f in features]
-        labels = [torch.tensor(f["labels"]) for f in features]
-        return {
-            "input_ids": pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id),
-            "attention_mask": pad_sequence(attention_mask, batch_first=True, padding_value=0),
-            "labels": pad_sequence(labels, batch_first=True, padding_value=-100),
-        }
-
-
-def print_gpu_memory():
-    """Print current GPU memory usage."""
-    if not torch.cuda.is_available():
-        return
-    print("\nGPU Memory:")
-    for i in range(torch.cuda.device_count()):
-        allocated = torch.cuda.memory_allocated(i) / 1e9
-        reserved = torch.cuda.memory_reserved(i) / 1e9
-        print(f"  Device {i}: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
-
-
-def print_sample_example(example: TrainingExample):
-    """Print a sample training example."""
-    print("\n" + "=" * 80)
-    print("Sample training example:")
-    print("=" * 80)
-    print(f"Word: {example.word}")
-    print(f"Synset ID: {example.correct_synset_id}")
-    print(f"Sentence: {example.sentence}")
-    print(f"Correct answer: {example.correct_answer_letter}")
-    print(f"\nPrompt:\n{example.prompt}")
-    print("=" * 80)
+def collate(features: list[dict[str, Any]], pad_id: int) -> dict[str, torch.Tensor]:
+    """Pad a batch to its longest sequence (labels with -100)."""
+    pad = {"input_ids": pad_id, "attention_mask": 0, "labels": -100}
+    return {k: pad_sequence([torch.tensor(f[k]) for f in features], batch_first=True, padding_value=v)
+            for k, v in pad.items()}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a word sense disambiguation model")
-    parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="Model name or path")
-    parser.add_argument("--data-dir", type=Path, help="Generated data: directory of <word>.json or a .tar.xz of them")
-    parser.add_argument("--output-dir", type=Path, help="Directory to save model outputs")
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Training batch size")
-    parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate")
+    parser.add_argument("--model", type=str, default="answerdotai/ModernBERT-Large-Instruct", help="Model name or path")
+    parser.add_argument("--data-dir", type=Path, default=Path(__file__).parent / "data" / "generated.tar.xz",
+                        help="Generated data: directory of <word>.json or a .tar.xz of them")
+    parser.add_argument("--output-dir", type=Path, default=Path(__file__).parent / "output",
+                        help="Directory to save model outputs")
+    parser.add_argument("--batch-size", type=int, default=64, help="Training batch size")
+    parser.add_argument("--learning-rate", type=float, default=3e-5, help="Learning rate")
     parser.add_argument("--num-epochs", type=float, default=1, help="Number of training epochs")
     parser.add_argument("--max-steps", type=int, default=-1,
                         help="Maximum number of training steps (-1 for no limit, useful for debugging)")
-    parser.add_argument("--seed", type=int, default=DEFAULT_RANDOM_SEED, help="Random seed")
-    parser.add_argument("--report-to", type=str, default=TrainingConfig.report_to,
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--report-to", type=str, default="wandb",
                         help="Where Trainer should log (e.g. 'wandb', 'none')")
     parser.add_argument("--run-name", type=str, help="Run name for the tracker (defaults to output dir name)")
-    parser.add_argument("--freeze-embeddings", action="store_true",
-                        help="Freeze the input embedding layer (~51M params)")
-    parser.add_argument("--eval-steps", type=int, default=TrainingConfig.eval_steps, help="Run eval every N steps")
-    parser.add_argument("--eval-wn-count", type=int, default=TrainingConfig.eval_wn_count,
+    parser.add_argument("--eval-steps", type=int, default=500, help="Run eval every N steps")
+    parser.add_argument("--eval-wn-count", type=int, default=5000,
                         help="Hold out this many wn benchmark examples as the eval set (0 disables eval)")
     parser.add_argument("--wn-train", action="store_true",
                         help="Also train on the WordNet example sentences that are not held out for eval")
@@ -499,12 +408,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Also train on this Raganato-format corpus (prefix of .data.xml/.gold.key.txt)")
     parser.add_argument("--sense-index", type=Path, help="WordNet 3.0 index.sense (required with --semcor/--wngt)")
     parser.add_argument("--wngt", type=Path, help="Also train on the WordNet gloss corpus (glosstag directory)")
-    parser.add_argument("--wngt-parts", type=str, default=TrainingConfig.wngt_parts, help="def,ex subset to use")
-    parser.add_argument("--wngt-tags", type=str, default=TrainingConfig.wngt_tags, help="man,auto subset to use")
-    parser.add_argument("--weight-decay", type=float, default=DEFAULT_WEIGHT_DECAY, help="AdamW weight decay")
-    parser.add_argument("--label-smoothing", type=float, default=DEFAULT_LABEL_SMOOTHING,
-                        help="Label smoothing applied in the model loss")
-    parser.add_argument("--lr-scheduler", type=str, default=DEFAULT_LR_SCHEDULER,
+    parser.add_argument("--wngt-parts", type=str, default="def,ex", help="def,ex subset to use")
+    parser.add_argument("--wngt-tags", type=str, default="man,auto", help="man,auto subset to use")
+    parser.add_argument("--weight-decay", type=float, default=0.0, help="AdamW weight decay")
+    parser.add_argument("--label-smoothing", type=float, default=0.0, help="Label smoothing applied in the model loss")
+    parser.add_argument("--lr-scheduler", type=str, default="linear",
                         help="HuggingFace LR scheduler type (e.g. linear, cosine, cosine_with_restarts)")
     parser.add_argument("--teacher", type=Path, help="distill from this trained WSD model (same letters/prompts)")
     parser.add_argument("--unlabeled-prompts", type=Path,
@@ -514,11 +422,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--grad-accum", type=int, default=1, help="gradient accumulation steps")
     parser.add_argument("--nodes", type=int, help=argparse.SUPPRESS)  # appended by run_distributed.py
     return parser.parse_args(argv)
-
-
-class UnlabeledNeedsTeacherError(ValueError):
-    def __init__(self):
-        super().__init__("--unlabeled-prompts needs --teacher (their loss is the teacher's distribution)")
 
 
 class DistillTrainer(Trainer):
@@ -559,7 +462,7 @@ def _trainer(args, device) -> tuple[type, dict]:
     """Plain Trainer, or DistillTrainer with the frozen teacher loaded on ``device``."""
     if not args.teacher:
         if args.unlabeled_prompts:
-            raise UnlabeledNeedsTeacherError()
+            raise ValueError("--unlabeled-prompts needs --teacher (their loss is the teacher's distribution)")
         return Trainer, {}
     teacher = WSDModernBertForMaskedLM.from_pretrained(
         args.teacher, dtype=torch.bfloat16, attn_implementation=attn_implementation(),
@@ -572,43 +475,19 @@ def _trainer(args, device) -> tuple[type, dict]:
 def main(argv: list[str] | None = None):
     """Main training function."""
     args = parse_args(argv)
-    config = TrainingConfig(
-        model_name=args.model,
-        data_dir=args.data_dir or TrainingConfig.data_dir,
-        output_dir=args.output_dir or TrainingConfig.output_dir,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        num_epochs=args.num_epochs,
-        max_steps=args.max_steps,
-        random_seed=args.seed,
-        report_to=args.report_to,
-        eval_steps=args.eval_steps,
-        eval_wn_count=args.eval_wn_count,
-        wn_train=args.wn_train,
-        semcor=args.semcor,
-        nota_examples=not args.no_nota_examples,
-        wngt=args.wngt,
-        unlabeled_prompts=args.unlabeled_prompts,
-        wngt_parts=args.wngt_parts,
-        wngt_tags=args.wngt_tags,
-        sense_index=args.sense_index,
-        weight_decay=args.weight_decay,
-        label_smoothing=args.label_smoothing,
-        lr_scheduler=args.lr_scheduler,
-    )
     os.environ.setdefault("WANDB_PROJECT", "modernbert-wsd-training")
 
     # Set random seeds for reproducibility
-    random.seed(config.random_seed)
-    torch.manual_seed(config.random_seed)
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
     # Load model and tokenizer. Weights stay fp32 (bf16 autocast happens in the
     # Trainer): with pure-bf16 weights, lr ~3e-5 updates are below bf16's
     # resolution on many weights and get rounded away.
-    print(f"Loading model and tokenizer: {config.model_name}")
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+    print(f"Loading model and tokenizer: {args.model}")
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
     model = WSDModernBertForMaskedLM.from_pretrained(
-        config.model_name,
+        args.model,
         dtype=torch.float32,
         attn_implementation=attn_implementation(),
     )
@@ -618,7 +497,7 @@ def main(argv: list[str] | None = None):
     # non-mask positions (avg prompt length ~150, one mask per prompt).
     # Inference uses a parallel path via ``prediction_positions`` in model.py.
     model.sparse_prediction = True
-    model.config.label_smoothing = config.label_smoothing  # applied in WSDModernBertForMaskedLM.forward
+    model.args.label_smoothing = args.label_smoothing  # applied in WSDModernBertForMaskedLM.forward
 
     # If we loaded a pristine checkpoint the decoder is still full-vocab; prune
     # it down to the 128 answer-letter rows. When resuming from a previously
@@ -633,31 +512,18 @@ def main(argv: list[str] | None = None):
     else:
         print(f"Loaded pre-pruned checkpoint with {len(letter_set.letters)} output tokens")
 
-    # Optionally freeze the input embedding layer (~51M params on ModernBERT).
-    if args.freeze_embeddings:
-        frozen = 0
-        for p in model.model.embeddings.parameters():
-            p.requires_grad = False
-            frozen += p.numel()
-        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        total = sum(p.numel() for p in model.parameters())
-        print(
-            f"Froze embeddings: {frozen/1e6:.1f}M params frozen; "
-            f"trainable {trainable/1e6:.1f}M / total {total/1e6:.1f}M"
-        )
-    print(f"Model dtype: {model.dtype}, attention: {model.config._attn_implementation}")
+    print(f"Model dtype: {model.dtype}, attention: {model.args._attn_implementation}")
 
-    training_examples, eval_examples = build_examples(config, tokenizer)
-    train_dataset = WSDDataset(training_examples, tokenizer, letter_set, config.max_length)
+    training_examples, eval_examples = build_examples(args, tokenizer)
+    train_dataset = WSDDataset(training_examples, tokenizer, letter_set, MAX_LENGTH)
     eval_dataset = (
-        WSDDataset(eval_examples, tokenizer, letter_set, config.max_length)
+        WSDDataset(eval_examples, tokenizer, letter_set, MAX_LENGTH)
         if eval_examples else None
     )
-    data_collator = WSDDataCollator(tokenizer)
+    data_collator = functools.partial(collate, pad_id=tokenizer.pad_token_id)
 
-    # Print a sample example
     if training_examples:
-        print_sample_example(training_examples[0])
+        print(f"Sample prompt:\n{training_examples[0].prompt}\nanswer: {training_examples[0].correct_answer_letter}")
 
     # Accuracy on the held-out eval set. With ``sparse_prediction``, the model
     # returns logits of shape (num_masks, answer_vocab) — one row per label
@@ -685,33 +551,33 @@ def main(argv: list[str] | None = None):
     # and restore the best-accuracy one at the end of training.
     eval_enabled = eval_dataset is not None
     save_strategy = "steps" if eval_enabled else (
-        "epoch" if config.max_steps == -1 else "steps"
+        "epoch" if args.max_steps == -1 else "steps"
     )
     training_args = TrainingArguments(
-        output_dir=str(config.output_dir),
-        run_name=args.run_name or config.output_dir.name,
-        num_train_epochs=config.num_epochs,
-        max_steps=config.max_steps,
-        per_device_train_batch_size=config.batch_size,
-        per_device_eval_batch_size=config.batch_size,
+        output_dir=str(args.output_dir),
+        run_name=args.run_name or args.output_dir.name,
+        num_train_epochs=args.num_epochs,
+        max_steps=args.max_steps,
+        per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
-        learning_rate=config.learning_rate,
-        warmup_steps=config.warmup_ratio,  # float < 1 is a ratio in transformers 5
-        weight_decay=config.weight_decay,
-        lr_scheduler_type=config.lr_scheduler,
+        learning_rate=args.learning_rate,
+        warmup_steps=0.1,  # float < 1 is a ratio in transformers 5
+        weight_decay=args.weight_decay,
+        lr_scheduler_type=args.lr_scheduler,
         logging_steps=10,
         eval_strategy="steps" if eval_enabled else "no",
-        eval_steps=config.eval_steps if eval_enabled else None,
+        eval_steps=args.eval_steps if eval_enabled else None,
         save_strategy=save_strategy,
-        save_steps=config.eval_steps if save_strategy == "steps" else None,
+        save_steps=args.eval_steps if save_strategy == "steps" else None,
         save_total_limit=2,
         load_best_model_at_end=eval_enabled,
         metric_for_best_model="accuracy" if eval_enabled else None,
         greater_is_better=True if eval_enabled else None,
         bf16=torch.cuda.is_available(),
         dataloader_num_workers=0,
-        report_to=config.report_to,
-        seed=config.random_seed,
+        report_to=args.report_to,
+        seed=args.seed,
     )
 
     trainer_cls, trainer_kwargs = _trainer(args, training_args.device)
@@ -727,17 +593,14 @@ def main(argv: list[str] | None = None):
         **trainer_kwargs,
     )
 
-    if config.max_steps > 0:
-        print(f"\nStarting training for max {config.max_steps} step(s) (debugging mode)...")
+    if args.max_steps > 0:
+        print(f"\nStarting training for max {args.max_steps} step(s) (debugging mode)...")
     else:
-        print(f"\nStarting training for {config.num_epochs} epoch(s)...")
+        print(f"\nStarting training for {args.num_epochs} epoch(s)...")
     print(f"Using device: {training_args.device}, GPUs: {training_args.n_gpu}, bf16: {training_args.bf16}")
-    print_gpu_memory()
-
     trainer.train()
-    print_gpu_memory()
 
-    final_model_path = config.output_dir / "final"
+    final_model_path = args.output_dir / "final"
     print(f"\nTraining complete! Saving final model to: {final_model_path}")
     trainer.save_model(str(final_model_path))
     tokenizer.save_pretrained(str(final_model_path))

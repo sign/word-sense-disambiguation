@@ -18,11 +18,6 @@ NUM_LETTERS = 128
 NOTA_LETTER_INDEX = NUM_LETTERS - 1
 
 
-class NotEnoughSingleTokenLettersError(RuntimeError):
-    def __init__(self, found: int, needed: int):
-        super().__init__(f"Tokenizer yielded only {found} single-token letters, need {needed}")
-
-
 @dataclass(frozen=True)
 class LetterSet:
     """Fixed, deterministic mapping between compact answer indices and letters/token ids."""
@@ -30,25 +25,18 @@ class LetterSet:
     token_ids: tuple[int, ...]   # length == NUM_LETTERS; tokenizer.encode(' ' + letter)[0]
 
 
-def _candidate_pools() -> list[list[str]]:
-    """Priority-ordered pools of candidate answer-letter characters.
-
-    The first pool has the most familiar / readable letters; we fill remaining
-    slots from later pools only if earlier pools don't yield enough single-token
-    characters on the given tokenizer.
-    """
-    latin = list(string.ascii_uppercase + string.ascii_lowercase)
-    digits = list(string.digits)
-    # Excluded:
-    #   '.' — clashes with the "A. " option template
-    #   '*' — clashes with the *word* marker in marked sentences
-    #   "'" — rendered option "'. def" is visually ambiguous with contractions
-    safe_symbols = list("!@#$%^&+=<>?/|~`()[]{}_-")
-    greek_upper = [chr(c) for c in range(0x0391, 0x03A9 + 1) if c != 0x03A2]
-    greek_lower = [chr(c) for c in range(0x03B1, 0x03C9 + 1)]
-    cyrillic_upper = [chr(c) for c in range(0x0410, 0x042F + 1)]
-    cyrillic_lower = [chr(c) for c in range(0x0430, 0x044F + 1)]
-    return [latin, digits, safe_symbols, greek_upper, greek_lower, cyrillic_upper, cyrillic_lower]
+# Priority-ordered pools of candidate answer letters: the most readable first, later pools only fill
+# slots when earlier ones do not yield enough single-token characters on the tokenizer. Excluded:
+# '.' (clashes with the "A. " option template), '*' (the *word* marker), "'" (looks like a contraction).
+_CANDIDATE_POOLS = [
+    list(string.ascii_uppercase + string.ascii_lowercase),
+    list(string.digits),
+    list("!@#$%^&+=<>?/|~`()[]{}_-"),
+    [chr(c) for c in range(0x0391, 0x03A9 + 1) if c != 0x03A2],  # Greek upper
+    [chr(c) for c in range(0x03B1, 0x03C9 + 1)],  # Greek lower
+    [chr(c) for c in range(0x0410, 0x042F + 1)],  # Cyrillic upper
+    [chr(c) for c in range(0x0430, 0x044F + 1)],  # Cyrillic lower
+]
 
 
 @cache
@@ -63,7 +51,7 @@ def build_letters(tokenizer: PreTrainedTokenizerBase) -> LetterSet:
     seen: set[int] = set()
     unk_id = tokenizer.unk_token_id
 
-    for pool in _candidate_pools():
+    for pool in _CANDIDATE_POOLS:
         for c in pool:
             encoded = tokenizer.encode(" " + c, add_special_tokens=False)
             if len(encoded) != 1:
@@ -80,6 +68,6 @@ def build_letters(tokenizer: PreTrainedTokenizerBase) -> LetterSet:
             break
 
     if len(letters) < NUM_LETTERS:
-        raise NotEnoughSingleTokenLettersError(len(letters), NUM_LETTERS)
+        raise RuntimeError(f"Tokenizer yielded only {len(letters)} single-token letters, need {NUM_LETTERS}")
 
     return LetterSet(letters=tuple(letters), token_ids=tuple(ids))

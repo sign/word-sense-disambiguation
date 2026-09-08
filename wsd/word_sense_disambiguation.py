@@ -1,5 +1,4 @@
 import logging
-import os
 from dataclasses import dataclass, field
 
 import requests
@@ -19,16 +18,10 @@ logger = logging.getLogger(__name__)
 # Constants
 NO_DEFINITIONS_FOUND = "No definitions found"
 _MAX_QUERIES_PER_REQUEST = 1000
-# (form, pos, language) -> definitions, filled from API responses. A corpus has a
-# bounded vocabulary, so after warm-up almost every lookup is a hit; each API
-# round trip otherwise costs ~0.35 ms per query of server-side work.
-# ponytail: unbounded (a few hundred k entries at most); add an LRU if memory matters.
-_definitions_cache: dict[tuple[str, str, str], list[Definition]] = {}
-# Minimum (renormalized) probability for "none of the above" to win. 0 keeps
-# plain argmax; >1 disables NOTA. The model over-predicts NOTA on long natural
-# sentences (trained on short WordNet-style examples), so batch users may want
-# to raise this. Read at call time so the sweep can vary it.
-_nota_threshold = lambda: float(os.environ.get("WSD_NOTA_THRESHOLD", "0"))  # noqa: E731
+# (form, pos) -> definitions, filled from API responses. A corpus has a bounded vocabulary, so
+# after warm-up almost every lookup is a hit; each API round trip otherwise costs ~0.35 ms per
+# query of server-side work. ponytail: unbounded (a few hundred k entries at most).
+_definitions_cache: dict[tuple[str, str], list[Definition]] = {}
 
 
 @dataclass
@@ -76,7 +69,6 @@ class DisambiguationResult:
 @dataclass
 class DisambiguationInput:
     """Input for batch disambiguation"""
-    word: str
     marked_sentence: str
     definitions: list[Definition]
 
@@ -126,27 +118,9 @@ def light_doc(doc) -> LightDoc:
     )
 
 
-def _get_definitions_raw(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
-    """Fetch definitions for exact (form, pos) queries from the WordNet API batch
-    endpoint, one list per query, in input order. Results are memoized per
-    (form, pos), and only distinct misses are sent to the server."""
-    if not queries:
-        return []
-
-    keys = [(q.form, q.pos, language) for q in queries]
-    misses = list(dict.fromkeys(k for k in keys if k not in _definitions_cache))
-    for start in range(0, len(misses), _MAX_QUERIES_PER_REQUEST):  # training sends hundreds of thousands at once
-        chunk = misses[start:start + _MAX_QUERIES_PER_REQUEST]
-        fetched = _fetch_definitions([WordQuery(form=f, pos=p) for f, p, _ in chunk], language)
-        if fetched is not None:  # a failed request is not cached, so it is retried next time
-            _definitions_cache.update(zip(chunk, fetched, strict=True))
-    return [list(_definitions_cache.get(k, [])) for k in keys]
-
-
-def _fetch_definitions(queries: list[WordQuery], language: str) -> list[list[Definition]] | None:
+def _fetch_definitions(queries: list[WordQuery]) -> list[list[Definition]] | None:
     """One batch request to the WordNet API; ``None`` on failure."""
-
-    url = f"{WORDNET_URL}/lexicons/omw-{language}:1.4/definitions"
+    url = f"{WORDNET_URL}/lexicons/omw-en:1.4/definitions"
     payload = {
         "queries": [{"form": q.form, "pos": q.pos} for q in queries]
     }
@@ -186,89 +160,35 @@ def _fetch_definitions(queries: list[WordQuery], language: str) -> list[list[Def
     return results[:len(queries)]
 
 
-def get_definitions(queries: list[WordQuery], language: str = "en") -> list[list[Definition]]:
-    """Fetch definitions for multiple words using the batch endpoint.
-
-    For adjectives (``pos="a"``), fetches both ``"a"`` (adjective) and ``"s"``
-    (satellite adjective) and concatenates them; other POS tags pass through
-    unchanged. Output is in input order.
-    """
-    if not queries:
-        return []
-
-    # Expand "a" queries to (a, s); track which output slot each expanded query
-    # feeds. Non-adjective queries map to exactly one slot, so the merge below
-    # uses a uniform extend() and there's no need to tag pos_type separately.
-    expanded_queries: list[WordQuery] = []
-    origin: list[int] = []
-    for i, q in enumerate(queries):
-        if q.pos == "a":
-            expanded_queries.append(WordQuery(form=q.form, pos="a"))
-            expanded_queries.append(WordQuery(form=q.form, pos="s"))
-            origin.extend([i, i])
-        else:
-            expanded_queries.append(q)
-            origin.append(i)
-
-    expanded_results = _get_definitions_raw(expanded_queries, language)
-
+def get_definitions(queries: list[WordQuery]) -> list[list[Definition]]:
+    """Definitions per query, in input order, from the WordNet API's batch endpoint. Adjectives
+    (``pos="a"``) also get their satellite (``"s"``) senses. Memoized per (form, pos); only distinct
+    misses go to the server, in requests of ``_MAX_QUERIES_PER_REQUEST``."""
+    expanded = [(i, WordQuery(q.form, p)) for i, q in enumerate(queries)
+                for p in (("a", "s") if q.pos == "a" else (q.pos,))]
+    misses = list(dict.fromkeys((q.form, q.pos) for _, q in expanded if (q.form, q.pos) not in _definitions_cache))
+    for start in range(0, len(misses), _MAX_QUERIES_PER_REQUEST):  # training sends hundreds of thousands at once
+        chunk = misses[start:start + _MAX_QUERIES_PER_REQUEST]
+        fetched = _fetch_definitions([WordQuery(f, p) for f, p in chunk])
+        if fetched is not None:  # a failed request is not cached, so it is retried next time
+            _definitions_cache.update(zip(chunk, fetched, strict=True))
     results: list[list[Definition]] = [[] for _ in queries]
-    for orig_idx, defs in zip(origin, expanded_results, strict=True):
-        results[orig_idx].extend(defs)
+    for i, q in expanded:
+        results[i].extend(_definitions_cache.get((q.form, q.pos), []))
     return results
 
 
-def get_choice_probabilities(probs, definitions: list[Definition]) -> list[float]:
-    """Get probabilities for all choice letters including 'none of the above'.
-
-    With a pruned decoder, logits (and therefore ``probs``) are already laid out
-    in answer-letter order. ``definitions[i]`` occupies letter ``i``; NOTA
-    always lives at the fixed index :data:`wsd.letters.NOTA_LETTER_INDEX`. The
-    returned list has one entry per definition followed by the NOTA probability.
-    """
-    choice_probs = [float(probs[i]) for i in range(len(definitions))]
-    choice_probs.append(float(probs[NOTA_LETTER_INDEX]))  # "none of the above"
-    return choice_probs
-
-
-def _result_from_probs(
-    probs, definitions: list[Definition],
-) -> DisambiguationResult:
-    """Pick the best choice from ``probs`` and package it as a result.
-
-    Confidence is renormalized over the valid choices only.
-    """
-    choice_probs = get_choice_probabilities(probs, definitions)
-    total_prob = sum(choice_probs)
-    best_choice_idx = choice_probs.index(max(choice_probs))
-    if best_choice_idx == len(definitions) and choice_probs[-1] < _nota_threshold() * total_prob:
-        best_choice_idx = choice_probs.index(max(choice_probs[:-1]))  # best real sense instead of NOTA
-    normalized_score = choice_probs[best_choice_idx] / total_prob if total_prob > 0 else 0.0
-
-    if best_choice_idx == len(definitions):  # NOTA slot
-        return DisambiguationResult(
-            synset_id="",
-            definition=NONE_OF_THE_ABOVE,
-            confidence=normalized_score,
-        )
-    best_definition = definitions[best_choice_idx]
-    return DisambiguationResult(
-        synset_id=best_definition.synset_id,
-        definition=best_definition.definition,
-        confidence=normalized_score,
-    )
-
-
-def disambiguate_word(
-    word: str,
-    marked_sentence: str,
-    definitions: list[Definition],
-) -> DisambiguationResult:
-    """Use ModernBERT to disambiguate word sense given context and definitions"""
-    results = disambiguate_word_batch(
-        [DisambiguationInput(word=word, marked_sentence=marked_sentence, definitions=definitions)],
-    )
-    return results[0]
+def _result_from_probs(probs: list[float], definitions: list[Definition]) -> DisambiguationResult:
+    """Pick the best option. With the pruned decoder ``probs`` are in answer-letter order: option
+    ``i`` is letter ``i`` and "none of the above" the fixed :data:`NOTA_LETTER_INDEX`. Confidence is
+    renormalized over the shown options."""
+    choice_probs = [probs[i] for i in range(len(definitions))] + [probs[NOTA_LETTER_INDEX]]
+    best = choice_probs.index(max(choice_probs))
+    total = sum(choice_probs)
+    confidence = choice_probs[best] / total if total > 0 else 0.0
+    if best == len(definitions):
+        return DisambiguationResult(synset_id="", definition=NONE_OF_THE_ABOVE, confidence=confidence)
+    return DisambiguationResult(definitions[best].synset_id, definitions[best].definition, confidence)
 
 
 def disambiguate_word_batch(
@@ -299,13 +219,8 @@ def disambiguate_word_batch(
         return results
 
     prompts = [
-        create_multiple_choice_prompt(
-            inp.word,
-            components.tokenizer.mask_token,
-            inp.marked_sentence,
-            inp.definitions,
-            components.tokenizer,
-        )
+        create_multiple_choice_prompt(components.tokenizer.mask_token, inp.marked_sentence, inp.definitions,
+                                      components.tokenizer)
         for _, inp in valid
     ]
     batch_results = unmask_token_batch(prompts)
@@ -339,27 +254,10 @@ def _is_content(token) -> bool:
 
 
 def _create_base_tokens(doc) -> tuple[list[DisambiguatedToken], list[int]]:
-    """Create base tokens and identify content word indices"""
-    tokens = []
-    content_word_indices = []
-
-    for token in doc:
-        # Create base token info
-        disambiguated_token = DisambiguatedToken(
-            word=token.text,
-            lemma=token.lemma_.lower(),
-            pos=token.pos_,
-            position=token.i,
-            start_char=token.idx,
-            end_char=token.idx + len(token.text)
-        )
-        tokens.append(disambiguated_token)
-
-        # Track content words that need disambiguation
-        if _is_content(token):
-            content_word_indices.append(token.i)
-
-    return tokens, content_word_indices
+    """Output tokens for a doc, and the indices of the content words to disambiguate."""
+    tokens = [DisambiguatedToken(word=t.text, lemma=t.lemma_.lower(), pos=t.pos_, position=t.i, start_char=t.idx,
+                                 end_char=t.idx + len(t.text)) for t in doc]
+    return tokens, [t.i for t in doc if _is_content(t)]
 
 
 def _word_definitions(tokens) -> list[list[Definition]]:
@@ -476,9 +374,7 @@ def _build_batch(
                 tok.synset_id, tok.synset_definition = u.definitions[0].synset_id, u.definitions[0].definition
                 tok.confidence, tok.expression = 1.0, u.expression
             continue
-        word = " ".join(t.text for t in docs[u.doc][u.start:u.end])
-        batch.append(DisambiguationInput(word=word, marked_sentence=_mark_span(docs[u.doc], u.start, u.end),
-                                         definitions=u.definitions))
+        batch.append(DisambiguationInput(_mark_span(docs[u.doc], u.start, u.end), u.definitions))
         kept.append(u)
     return batch, kept
 
@@ -496,11 +392,6 @@ def _apply_results(results, kept: list[_Unit], model_results) -> list[_Unit]:
             if result.definition != NONE_OF_THE_ABOVE:  # NOTA leaves the synset fields None
                 tok.synset_id, tok.synset_definition = result.synset_id, result.definition
     return rejected
-
-
-def _run_units(docs, results, units: list[_Unit], skip_single_sense: bool) -> list[_Unit]:
-    batch, kept = _build_batch(docs, results, units, skip_single_sense)
-    return _apply_results(results, kept, disambiguate_word_batch(batch))
 
 
 @dataclass
@@ -527,7 +418,9 @@ def complete_docs(
 ) -> list[WordSenseDisambiguation]:
     """Apply the phase-1 answers, then disambiguate the words of rejected expressions (phase 2)."""
     rejected = _apply_results(prepared.results, prepared.kept, model_results)
-    _run_units(prepared.docs, prepared.results, [w for u in rejected for w in u.words], skip_single_sense)
+    words = [w for u in rejected for w in u.words]
+    batch, kept = _build_batch(prepared.docs, prepared.results, words, skip_single_sense)
+    _apply_results(prepared.results, kept, disambiguate_word_batch(batch))
     return prepared.results
 
 

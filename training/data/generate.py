@@ -1,5 +1,5 @@
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
@@ -111,34 +111,16 @@ def _create_ollama_payload(form: str, all_synsets: list[dict]) -> dict:
     }
 
 
-def _stream_ollama_response(payload: dict) -> str:
-    """Stream response from Ollama API and return complete content"""
+def _ollama_response(payload: dict) -> str:
+    """Complete message content from the Ollama API (no streaming: nothing consumes increments)."""
     try:
-        resp = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=3600)
+        resp = requests.post(OLLAMA_URL, json={**payload, "stream": False}, timeout=3600)
         resp.raise_for_status()
     except requests.RequestException as e:
-        print(f"\nError: Failed to connect to Ollama endpoint at {OLLAMA_URL}")
-        print(f"Details: {e}")
+        print(f"\nError: Failed to connect to Ollama endpoint at {OLLAMA_URL}\nDetails: {e}")
         print("\nPlease ensure Ollama is running and accessible.")
         exit(1)
-
-    content_chunks: list[str] = []
-
-    for line in resp.iter_lines():
-        if not line:
-            continue
-        chunk = json.loads(line.decode("utf-8"))
-
-        msg = chunk.get("message") or {}
-        content = msg.get("content")
-
-        if content:
-            content_chunks.append(content)
-
-        if chunk.get("done"):
-            break
-
-    return "".join(content_chunks)
+    return resp.json()["message"]["content"]
 
 
 def process_form(form: str) -> tuple[str, bool, str | None]:
@@ -165,8 +147,7 @@ def process_form(form: str) -> tuple[str, bool, str | None]:
 
         # Create payload and stream response from Ollama
         payload = _create_ollama_payload(form, all_synsets)
-        full_content = _stream_ollama_response(payload)
-        parsed = json.loads(full_content)
+        parsed = json.loads(_ollama_response(payload))
 
         # Save to file
         with open(output_file, "w") as f:
@@ -180,21 +161,10 @@ def process_form(form: str) -> tuple[str, bool, str | None]:
 # Process forms in parallel with 4 workers
 print(f"Processing {len(forms)} forms with 4 parallel requests...")
 with ThreadPoolExecutor(max_workers=4) as executor:
-    # Submit all tasks
-    future_to_form = {executor.submit(process_form, form): form for form in forms}
-
-    # Process results as they complete with progress bar
-    with tqdm(total=len(forms), desc="Processing forms") as pbar:
-        for future in as_completed(future_to_form):
-            form = future_to_form[future]
-            try:
-                form_result, success, message = future.result()
-                if not success:
-                    tqdm.write(f"Error processing {form}: {message}")
-                elif message and message != "skipped - file exists":
-                    tqdm.write(f"{form}: {message}")
-            except (requests.RequestException, json.JSONDecodeError, OSError, ValueError) as e:
-                tqdm.write(f"Exception processing {form}: {e}")
-            pbar.update(1)
+    for form, success, message in tqdm(executor.map(process_form, forms), total=len(forms), desc="Processing forms"):
+        if not success:
+            tqdm.write(f"Error processing {form}: {message}")
+        elif message and message != "skipped - file exists":
+            tqdm.write(f"{form}: {message}")
 
 print(f"\nCompleted! Results saved to {generated_dir}/")

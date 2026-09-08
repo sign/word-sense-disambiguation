@@ -33,8 +33,8 @@ def _start_mps() -> None:
     """Start CUDA MPS for this node so the spaCy process and the model process on
     each GPU share it concurrently instead of time-slicing contexts (measured:
     model +9%, spaCy +10% when both run on one H100). Rank 0 starts the daemon,
-    the others wait for it; a missing binary or WSD_MPS=0 leaves things as is."""
-    if os.environ.get("WSD_MPS", "1") != "1" or not shutil.which("nvidia-cuda-mps-control"):
+    the others wait for it; a missing binary leaves things as is."""
+    if not shutil.which("nvidia-cuda-mps-control"):
         return
     os.environ.setdefault("CUDA_MPS_PIPE_DIRECTORY", "/tmp/wsd-mps-pipe")
     os.environ.setdefault("CUDA_MPS_LOG_DIRECTORY", "/tmp/wsd-mps-log")
@@ -105,7 +105,7 @@ def _spacy_worker(paths: list[str], batch_size: int, entities: bool, queue: mp.Q
     """
     # Under MPS, confine this client to a share of the SMs: spaCy's ~50k tiny kernels per 3k sentences otherwise
     # take the whole GPU in turns with the model. Must be set before the CUDA context is created.
-    os.environ.setdefault("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", os.environ.get("WSD_SPACY_SM_PERCENT", "25"))
+    os.environ.setdefault("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE", "25")
     from wsd.spacy_utils import run_spacy_pipe
 
     for path in paths:
@@ -213,7 +213,7 @@ def main():
     if torch.cuda.is_available():
         # The caching allocator otherwise grows to most of the GPU (72 GB seen) and
         # starves the spaCy worker processes sharing the device (~3 GB each).
-        torch.cuda.set_per_process_memory_fraction(float(os.environ.get("WSD_GPU_MEM_FRACTION", "0.7")))
+        torch.cuda.set_per_process_memory_fraction(0.7)  # room for the spaCy workers; measured faster than no cap
     files = sorted(Path(p) for p in glob.glob(args.input))[rank::world]
     args.output_dir.mkdir(parents=True, exist_ok=True)
 

@@ -137,12 +137,12 @@ on ALL. On labeled data alone the 150m is saturated at 80.0 ± 0.4 (4-5 epochs, 
 1.06M unlabeled Wikipedia prompts trained on the teacher's distribution only (`--unlabeled-prompts`, prompts from
 `scripts/dump_prompts.py`) lifts it to 80.8 (continued training on the labeled data alone: 79.8). Confidence cascades
 (small model answers, low-confidence prompts go to a large one): 150m → 1B escalating 9% reaches 81.0% at 0.72x the
-cost of C3; the 17m/32m are confidently wrong and do not work as a first stage. Details and graph: `scripts/cascade_suite.py`.
+cost of C3; the 17m/32m are confidently wrong and do not work as a first stage. (Cascade benchmark script and graph kept on the cluster, not in the repository.)
 
 What we learned: more epochs on the synthetic data alone overfit its style and destroy real-text accuracy;
 SemCor (222k gold-annotated sentences) fixes that, and it must be detokenized to match natural text (S5 vs R5).
 The published model's largest failure class on real text was over-predicting "none of the above" (34% of its
-misses); the SemCor-trained models almost never do (0.2%), so `WSD_NOTA_THRESHOLD` is no longer needed for them. Remaining errors are
+misses); the SemCor-trained models almost never do (0.2%), so the threshold knob was removed. Remaining errors are
 mostly fine-grained sense splits ("shake, as from cold" vs "tremble, as from fear").
 
 ## Throughput
@@ -176,7 +176,6 @@ in Python per chunk, and tokenization done before any GPU work. `unmask_token_ba
 process on the same GPU costs the model 16%; CUDA MPS (`wsd.batch` starts it) cuts that to 8%, and two
 persistent spaCy workers per GPU keep spaCy from pacing the pipeline.
 
-Also measured: spaCy's transformer in mixed precision (`WSD_SPACY_MIXED_PRECISION=1`, opt-in) makes spaCy ~20% faster but
 leaves the model's throughput unchanged next to it (3,342 vs 3,311 prompts/s), so it stays off.
 
 What did not work:

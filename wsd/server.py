@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -16,7 +15,6 @@ from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
 from wsd.env import WORDNET_URL
-from wsd.spacy_utils import swap_spacy_to_gpu, warm_cpu_spacy_pipeline
 from wsd.word_sense_disambiguation import disambiguate
 
 # Honor LOG_LEVEL from the environment so the Dockerfile (or a local operator)
@@ -31,26 +29,11 @@ logging.basicConfig(
 templates = Jinja2Templates(directory=os.path.dirname(__file__))
 
 
-async def http_exception_handler(request: Request, exc: HTTPException):
-    body = {
-        "error": {
-            "status": exc.status_code,
-            "message": exc.detail,
-            "type": type(exc).__name__,
-        },
-    }
-    return JSONResponse(body, status_code=exc.status_code)
-
-
-async def unhandled_exception_handler(request: Request, exc: Exception):
-    body = {
-        "error": {
-            "status": 500,
-            "message": str(exc),
-            "type": type(exc).__name__,
-        },
-    }
-    return JSONResponse(body, status_code=500)
+async def exception_handler(request: Request, exc: Exception):
+    status = exc.status_code if isinstance(exc, HTTPException) else 500
+    message = exc.detail if isinstance(exc, HTTPException) else str(exc)
+    body = {"error": {"status": status, "message": message, "type": type(exc).__name__}}
+    return JSONResponse(body, status_code=status)
 
 
 async def disambiguate_request(request: Request):
@@ -89,15 +72,10 @@ async def health_check_request(request: Request):
     return JSONResponse(body, status_code=200)
 
 
-async def options_request(request: Request):
-    return JSONResponse({}, status_code=200)
-
-
 routes = [
     Route('/', endpoint=index_request),
     Route('/health', endpoint=health_check_request),
     Route('/disambiguate', endpoint=disambiguate_request),
-    Route('/{path:path}', endpoint=options_request, methods=['OPTIONS']),
 ]
 
 middlewares = [
@@ -112,27 +90,13 @@ middlewares = [
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
-    """Warm up before serving traffic: load a CPU spaCy pipeline and the WSD
-    model so requests can be answered immediately, while the GPU spaCy
-    pipeline compiles its kernels in a worker thread and swaps in once warm
-    (~10s after start).
-
-    Set WSD_WARMUP=0 to skip (e.g. tests that need the server up instantly);
-    models then load lazily on the first request, as before."""
-    gpu_swap = None
+    """Load spaCy and the WSD model before serving (Cloud Run routes traffic only once the port
+    is open, so this costs start-up time, not request latency). WSD_WARMUP=0 skips it for tests."""
     if os.environ.get("WSD_WARMUP", "1") != "0":
         logging.getLogger(__name__).info("Warming up the pipeline...")
-        warm_cpu_spacy_pipeline()
         disambiguate("bank")
-        gpu_swap = asyncio.create_task(swap_spacy_to_gpu())
     yield
-    if gpu_swap is not None:
-        gpu_swap.cancel()
 
 
-app = Starlette(debug=os.environ.get("DEBUG") == "1", routes=routes, middleware=middlewares,
-                lifespan=lifespan,
-                exception_handlers={
-                    HTTPException: http_exception_handler,
-                    Exception: unhandled_exception_handler,
-                })
+app = Starlette(routes=routes, middleware=middlewares, lifespan=lifespan,
+                exception_handlers={HTTPException: exception_handler, Exception: exception_handler})
