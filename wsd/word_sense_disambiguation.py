@@ -33,19 +33,24 @@ class WordQuery:
 
 @dataclass
 class DisambiguatedToken:
-    """Token with disambiguation results"""
+    """Token-level linguistic information; meanings live in separate spans."""
     word: str
     lemma: str
     pos: str
     position: int
     start_char: int
     end_char: int
-    synset_id: str | None = None
-    synset_definition: str | None = None
-    confidence: float | None = None
-    # WordNet multiword form this token is part of ("test tube"); the sense fields then
-    # describe the whole expression and are repeated on each of its tokens.
-    expression: str | None = None
+
+
+@dataclass
+class Synset:
+    """An accepted word sense over an inclusive, zero-based token span."""
+    id: str
+    start_token: int
+    end_token: int
+    definition: str
+    confidence: float
+    expression: str | None = None  # canonical WordNet form for a multiword expression
 
 
 @dataclass
@@ -77,6 +82,7 @@ class DisambiguationInput:
 class WordSenseDisambiguation:
     tokens: list[DisambiguatedToken]
     entities: list[Entity]
+    synsets: list[Synset] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -370,9 +376,10 @@ def _build_batch(
     kept: list[_Unit] = []
     for u in units:
         if skip_single_sense and len(u.definitions) == 1:
-            for tok in results[u.doc].tokens[u.start:u.end]:
-                tok.synset_id, tok.synset_definition = u.definitions[0].synset_id, u.definitions[0].definition
-                tok.confidence, tok.expression = 1.0, u.expression
+            results[u.doc].synsets.append(Synset(
+                id=u.definitions[0].synset_id, start_token=u.start, end_token=u.end - 1,
+                definition=u.definitions[0].definition, confidence=1.0, expression=u.expression,
+            ))
             continue
         batch.append(DisambiguationInput(_mark_span(docs[u.doc], u.start, u.end), u.definitions))
         kept.append(u)
@@ -380,17 +387,17 @@ def _build_batch(
 
 
 def _apply_results(results, kept: list[_Unit], model_results) -> list[_Unit]:
-    """Write the model's answers on the units' tokens. Returns the multiword units the model rejected
-    ("none of the above"); their tokens stay unset for their words' own turn."""
+    """Record accepted synset spans and return rejected expressions for word-level fallback."""
     rejected = []
     for u, result in zip(kept, model_results, strict=True):
-        if result.definition == NONE_OF_THE_ABOVE and u.expression is not None:
-            rejected.append(u)
+        if result.definition == NONE_OF_THE_ABOVE:
+            if u.expression is not None:
+                rejected.append(u)
             continue
-        for tok in results[u.doc].tokens[u.start:u.end]:
-            tok.confidence, tok.expression = result.confidence, u.expression
-            if result.definition != NONE_OF_THE_ABOVE:  # NOTA leaves the synset fields None
-                tok.synset_id, tok.synset_definition = result.synset_id, result.definition
+        results[u.doc].synsets.append(Synset(
+            id=result.synset_id, start_token=u.start, end_token=u.end - 1,
+            definition=result.definition, confidence=result.confidence, expression=u.expression,
+        ))
     return rejected
 
 
@@ -421,6 +428,8 @@ def complete_docs(
     words = [w for u in rejected for w in u.words]
     batch, kept = _build_batch(prepared.docs, prepared.results, words, skip_single_sense)
     _apply_results(prepared.results, kept, disambiguate_word_batch(batch))
+    for result in prepared.results:
+        result.synsets.sort(key=lambda synset: synset.start_token)
     return prepared.results
 
 

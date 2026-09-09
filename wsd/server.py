@@ -47,10 +47,10 @@ async def disambiguate_request(request: Request):
 
     # Check if HTML output is requested
     if params.get("output") == "html":
-        return templates.TemplateResponse("wsd.template.html", {
+        return templates.TemplateResponse(request=request, name="wsd.template.html", context={
             "tokens": result.tokens,
             "entities": result.entities,
-            "request": request,
+            "synsets": result.synsets,
             "wordnet_url": WORDNET_URL,
         })
     else:

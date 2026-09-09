@@ -70,11 +70,37 @@ On AIDA-CoNLL test with Wikidata gold this scores F1 0.48 with the CPU pipeline 
 left to word sense disambiguation because the popularity prior links them badly.
 
 Multiword expressions that WordNet lists (`test tube`, `New York`, `give up`) are disambiguated as one unit
-first; each of their tokens carries the shared synset and the `expression` it belongs to. Only when the
+first; each accepted expression produces one synset span. Only when the
 model answers "none of the above" for the expression are its words disambiguated individually.
+
+### Response format
+
+Both `/disambiguate` and batch JSON lines return three arrays:
+
+- `tokens`: `word`, `lemma`, `pos`, `position`, `start_char`, `end_char` only.
+- `entities`: `id`, `start_token`, `end_token`, `text`, `description`, `url`.
+- `synsets`: `id`, `start_token`, `end_token`, `definition`, `confidence`, `expression`.
+
+Entity and synset token indices are zero-based and **inclusive** at both ends. Character offsets are
+zero-based with an exclusive `end_char`. Synsets are sorted by token position. A single-word sense has
+equal start/end indices and `expression: null`; a multiword sense includes its canonical WordNet form.
+Words with no definitions or a "none of the above" answer have no synset entry. Entity and synset spans
+are independent and may overlap. Repeated occurrences of the same sense have separate spans.
+
+For example, the accepted expression in `She held a test tube.` appears once in `synsets`:
+
+```json
+{
+  "id": "omw-en-04415921-n",
+  "start_token": 3,
+  "end_token": 4,
+  "definition": "glass tube closed at one end",
+  "confidence": 0.8,
+  "expression": "test tube"
+}
+```
 
 ## Usage
 
 To view an output, visit this [example link](http://localhost:8005/disambiguate?text=Obama%20told%20the%20bus%20driver,%20to%20drive%20to%20D.C.&lang=en&output=html) (adjust port if running locally):
 ![Example of our system's output](assets/output-example.png)
-
