@@ -22,14 +22,20 @@
                 {% endfor %}
             </tr>
             <tr>
+                {% set token_index = namespace(value=0) %}
                 {% for token in tokens %}
-                <td class="definition-cell">
-                    {% if token.synset_definition and token.synset_id %}
-                    <a href="{{ wordnet_url }}/lexicons/omw-en:1.4/synsets/{{ token.synset_id }}" target="_blank">{{ token.synset_definition }}</a>
-                    {% else %}
-                    -
+                    {% for synset in synsets %}
+                        {% if synset.start_token == token.position and token.position == token_index.value %}
+                            <td class="definition-cell" colspan="{{ synset.end_token - synset.start_token + 1 }}">
+                                <a href="{{ wordnet_url }}/lexicons/omw-en:1.4/synsets/{{ synset.id }}" target="_blank">{{ synset.definition }}</a>
+                            </td>
+                            {% set token_index.value = synset.end_token + 1 %}
+                        {% endif %}
+                    {% endfor %}
+                    {% if token.position == token_index.value %}
+                        <td>-</td>
+                        {% set token_index.value = token_index.value + 1 %}
                     {% endif %}
-                </td>
                 {% endfor %}
             </tr>
             <tr>

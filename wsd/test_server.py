@@ -130,8 +130,10 @@ def test_e2e_disambiguate_endpoint(server):
     # Validate response structure
     assert "tokens" in result
     assert "entities" in result
+    assert "synsets" in result
     assert isinstance(result["tokens"], list)
     assert isinstance(result["entities"], list)
+    assert isinstance(result["synsets"], list)
 
     # Validate that we have tokens and entities
     assert len(result["tokens"]) > 0
@@ -148,18 +150,11 @@ def test_e2e_disambiguate_endpoint(server):
     assert technology_token['start_char'] == 11
     assert technology_token['end_char'] == 21
 
-    # Check that disambiguation keys exist
-    # confidence, synset_id, and synset_definition may be None if:
-    # 1. No definitions were found from API
-    # 2. Model chose "none of the above"
-    assert 'confidence' in technology_token
-    assert 'synset_id' in technology_token
-    assert 'synset_definition' in technology_token
-
-    # If confidence is not None, it should be a valid number
-    if technology_token['confidence'] is not None:
-        assert isinstance(technology_token['confidence'], int | float)
-        assert 0.0 <= technology_token['confidence'] <= 1.0
+    assert set(technology_token) == {'word', 'lemma', 'pos', 'position', 'start_char', 'end_char'}
+    for synset in result['synsets']:
+        assert set(synset) == {'id', 'start_token', 'end_token', 'definition', 'confidence', 'expression'}
+        assert 0 <= synset['start_token'] <= synset['end_token'] < len(result['tokens'])
+        assert 0.0 <= synset['confidence'] <= 1.0
 
     # Validate first entity exactly
     expected_first_entity = {

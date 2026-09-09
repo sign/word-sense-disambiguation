@@ -25,7 +25,11 @@ from wsd.env import detach_from_torchrun
 
 def _to_dict(result) -> dict:
     """Flat dataclasses -> dict; ``dataclasses.asdict`` recursion costs ~0.25 ms per sentence."""
-    return {"tokens": [vars(t) for t in result.tokens], "entities": [vars(e) for e in result.entities]}
+    return {
+        "tokens": [vars(t) for t in result.tokens],
+        "entities": [vars(e) for e in result.entities],
+        "synsets": [vars(s) for s in result.synsets],
+    }
 
 # Each rank is an independent single-GPU worker (spaCy's transformer and the
 # WSD model must share a device); must run before torch/cupy are imported.
@@ -132,7 +136,7 @@ class SpacyPool:
 
 
 def process_file(path: Path, out_path: Path, pool: SpacyPool, skip_single_sense: bool, log) -> tuple[int, int]:
-    """Disambiguate one file (whose batches the pool is producing next); returns ``(sentences, prompts)``."""
+    """Disambiguate one file (whose batches the pool is producing next); returns ``(sentences, synsets)``."""
     global _model_seconds
     tmp = out_path.with_suffix(".jsonl.tmp")
     n_sentences = 0
@@ -143,7 +147,7 @@ def process_file(path: Path, out_path: Path, pool: SpacyPool, skip_single_sense:
     def write(texts, results, out):
         count = 0
         for text, result in zip(texts, results, strict=True):
-            count += sum(tok.confidence is not None for tok in result.tokens)
+            count += len(result.synsets)
             out.write(json.dumps({"text": text, **_to_dict(result)}) + "\n")
         return count
 
@@ -159,13 +163,13 @@ def process_file(path: Path, out_path: Path, pool: SpacyPool, skip_single_sense:
             n_sentences += len(texts)
             t_spacy += dt_spacy
             t_wsd += t2 - t1
-        n_prompts = sum(f.result() for f in writes)
+        n_synsets = sum(f.result() for f in writes)
     os.replace(tmp, out_path)
     elapsed = time.time() - start
-    log(f"{path.name}: {n_sentences} sentences, {n_prompts} prompts in {elapsed:.0f}s "
+    log(f"{path.name}: {n_sentences} sentences, {n_synsets} synsets in {elapsed:.0f}s "
         f"({n_sentences / max(elapsed, 1e-9):.0f} sent/s; spacy {t_spacy:.0f}s summed over workers, "
         f"wsd {t_wsd:.0f}s of which model {_model_seconds:.0f}s)")
-    return n_sentences, n_prompts
+    return n_sentences, n_synsets
 
 
 def main():
@@ -196,18 +200,18 @@ def main():
     def log(msg):
         print(f"[rank {rank}] {msg}", flush=True)
 
-    total_sentences = total_prompts = 0
+    total_sentences = total_synsets = 0
     start = time.time()
     todo = [p for p in files if not (args.output_dir / f"{p.stem}.jsonl").exists()]
     pool = SpacyPool(todo, args.batch_size, not args.no_entities, args.spacy_workers, args.skip_single_sense)
     for path in todo:
-        s, p = process_file(path, args.output_dir / f"{path.stem}.jsonl", pool, args.skip_single_sense, log)
+        s, n = process_file(path, args.output_dir / f"{path.stem}.jsonl", pool, args.skip_single_sense, log)
         total_sentences += s
-        total_prompts += p
+        total_synsets += n
     pool.close()
     elapsed = time.time() - start
-    log(f"done: {total_sentences} sentences, {total_prompts} prompts in {elapsed:.0f}s "
-        f"({total_sentences / max(elapsed, 1e-9):.0f} sent/s, {total_prompts / max(elapsed, 1e-9):.0f} prompts/s)")
+    log(f"done: {total_sentences} sentences, {total_synsets} synsets in {elapsed:.0f}s "
+        f"({total_sentences / max(elapsed, 1e-9):.0f} sent/s, {total_synsets / max(elapsed, 1e-9):.0f} synsets/s)")
 
 
 if __name__ == "__main__":

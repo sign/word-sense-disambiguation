@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "httpx", # Starlette TestClient
     "ruff",
     "requests-mock",
     "pytest",
@@ -27,7 +28,8 @@ dev = [
 
 web = [
     "uvicorn",
-    "starlette"
+    "starlette",
+    "jinja2",
 ]
 
 benchmark = [
