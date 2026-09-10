@@ -77,7 +77,7 @@ model answers "none of the above" for the expression are its words disambiguated
 
 Both `/disambiguate` and batch JSON lines return three arrays:
 
-- `tokens`: `word`, `lemma`, `pos`, `position`, `start_char`, `end_char` only.
+- `tokens`: `word`, `lemma`, `pos`, `position`, `start_char`, `end_char`, `morph`.
 - `entities`: `id`, `start_token`, `end_token`, `text`, `description`, `url`.
 - `synsets`: `id`, `start_token`, `end_token`, `definition`, `confidence`, `expression`.
 
@@ -86,6 +86,12 @@ zero-based with an exclusive `end_char`. Synsets are sorted by token position. A
 equal start/end indices and `expression: null`; a multiword sense includes its canonical WordNet form.
 Words with no definitions or a "none of the above" answer have no synset entry. Entity and synset spans
 are independent and may overlap. Repeated occurrences of the same sense have separate spans.
+
+`morph` contains spaCy's morphological features as a string-to-string dictionary (`token.morph.to_dict()`),
+for example `{"Number": "Plur"}` for **books** and `{"Tense": "Past", "VerbForm": "Fin"}` for **visited**.
+It is `{}` when no features are available; multi-valued features retain spaCy's comma-separated strings.
+These describe each original token, including tokens inside entity or synset spans, not the whole span.
+The API and batch output preserve the same features; they do not interpret them as target-language inflections.
 
 For example, the accepted expression in `She held a test tube.` appears once in `synsets`:
 

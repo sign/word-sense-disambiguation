@@ -144,7 +144,8 @@ def test_api_expression_span(president_doc, monkeypatch):
     result = response.json()
     assert set(result) == {"tokens", "entities", "synsets"}
     for token in result["tokens"]:
-        assert set(token) == {"word", "lemma", "pos", "position", "start_char", "end_char"}
+        assert set(token) == {"word", "lemma", "pos", "position", "start_char", "end_char", "morph"}
+        assert token["morph"] == {}
         assert text[token["start_char"]:token["end_char"]] == token["word"]
     assert result["synsets"] == [{
         "id": "president", "start_token": 9, "end_token": 13,
