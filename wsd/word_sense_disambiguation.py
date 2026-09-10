@@ -40,6 +40,7 @@ class DisambiguatedToken:
     position: int
     start_char: int
     end_char: int
+    morph: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -98,6 +99,7 @@ class LightToken:
     whitespace_: str
     dep_: str = ""
     head_i: int = -1  # index of the syntactic head (spaCy ``token.head.i``)
+    morph: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -117,7 +119,8 @@ class LightDoc:
 def light_doc(doc) -> LightDoc:
     return LightDoc(
         tokens=[
-            LightToken(t.text, t.lemma_, t.pos_, t.i, t.idx, t.is_punct, t.is_space, t.whitespace_, t.dep_, t.head.i)
+            LightToken(t.text, t.lemma_, t.pos_, t.i, t.idx, t.is_punct, t.is_space, t.whitespace_, t.dep_, t.head.i,
+                       t.morph.to_dict())
             for t in doc
         ],
         entities=_extract_entities(doc),
@@ -262,7 +265,8 @@ def _is_content(token) -> bool:
 def _create_base_tokens(doc) -> tuple[list[DisambiguatedToken], list[int]]:
     """Output tokens for a doc, and the indices of the content words to disambiguate."""
     tokens = [DisambiguatedToken(word=t.text, lemma=t.lemma_.lower(), pos=t.pos_, position=t.i, start_char=t.idx,
-                                 end_char=t.idx + len(t.text)) for t in doc]
+                                 end_char=t.idx + len(t.text),
+                                 morph=dict(t.morph) if isinstance(t, LightToken) else t.morph.to_dict()) for t in doc]
     return tokens, [t.i for t in doc if _is_content(t)]
 
 

@@ -23,8 +23,8 @@ def batch_module(monkeypatch):
 def result():
     return wsd.WordSenseDisambiguation(
         tokens=[
-            wsd.DisambiguatedToken("test", "test", "NOUN", 0, 0, 4),
-            wsd.DisambiguatedToken("tube", "tube", "NOUN", 1, 5, 9),
+            wsd.DisambiguatedToken("test", "test", "NOUN", 0, 0, 4, morph={"Number": "Sing"}),
+            wsd.DisambiguatedToken("tube", "tube", "NOUN", 1, 5, 9, morph={"Number": "Sing"}),
         ],
         entities=[wsd.Entity("1", 0, 1, "test tube", "example", "https://example.com")],
         synsets=[wsd.Synset("test_tube", 0, 1, "a laboratory tube", 0.8, "test tube")],
