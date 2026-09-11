@@ -30,6 +30,11 @@ batch endpoint used here (`POST /lexicons/omw-en:1.4/definitions`) answers ~1,00
 Without Docker (e.g. a Slurm node with enroot): `enroot import -o wn.sqsh docker://ghcr.io#sign/wn:latest`
 and run `uvicorn wn.web:app --host 0.0.0.0 --port 8080` inside it, or rely on the built-in local start above.
 
+WSD also looks up function words supported by this lexicon: pronouns, determiners, adpositions,
+conjunctions, auxiliaries, particles, and interjections. Their senses use the same disambiguation and
+token-span response as content words. Punctuation, spaces, symbols, and unknown POS tags are not queried;
+words with no candidates or a model-rejected sense still have no synset.
+
 ### Running locally
 
 ```shell

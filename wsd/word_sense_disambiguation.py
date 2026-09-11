@@ -248,13 +248,20 @@ _SPACY_TO_WORDNET_POS: dict[str, str] = {
     'PROPN': 'n',
     'PRON': 'h',  # pronouns come from the Wikidata-lexeme extension of sign/wn (WN-LMF code h)
     'NUM': 'n',
-    'INTJ': 'n',  # hello→n, alas/ouch/wow→r (but only noun available)
+    'INTJ': 'i',
     # v
     'VERB': 'v',
+    'AUX': 'v',
     # a / s
     'ADJ': 'a',
     # r
     'ADV': 'r',
+    # Function words in sign/wn's Wikidata-lexeme extension (WN-LMF codes).
+    'ADP': 'p',
+    'CCONJ': 'c',
+    'SCONJ': 'c',
+    'DET': 'd',
+    'PART': 'y',
 }
 
 
@@ -296,6 +303,9 @@ def _queries(token) -> list[WordQuery]:
     pos = _SPACY_TO_WORDNET_POS[token.pos_]
     lemma, surface = token.lemma_.lower(), token.text.lower()
     candidates = [(lemma, pos)]
+    # OMW also represents interjections as nouns/adverbs and negation as an adverb.
+    for extra_pos in {"INTJ": ("n", "r"), "PART": ("r",)}.get(token.pos_, ()):
+        candidates.extend([(lemma, extra_pos), (surface, extra_pos)])
     if token.pos_ == "VERB" and token.dep_ in ("amod", "acomp"):
         candidates.insert(0, (surface, "a"))
     if surface != lemma:
