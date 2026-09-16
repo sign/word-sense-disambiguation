@@ -14,6 +14,14 @@ We expose a [web server](./wsd/server.py) that can be used to disambiguate words
   benchmark jobs need no separate service.
 - `WSD_MODEL`: model name or local checkpoint directory (default `sign/Ettin-150m-WSD`; `sign/ModernBERT-Large-Instruct-WSD` is the larger, 0.5-point more accurate model at 2.3x the cost, `sign/Ettin-1B-WSD` the most accurate at 7x).
 
+### Response version
+
+`MODEL_VERSION` appears in `/health.version` and the `X-Model-Tag` header on
+health and disambiguation responses. Image publishing injects a unique build
+identifier; manual builds can pass `--build-arg MODEL_VERSION=...`.
+Change it when overriding model weights, WordNet data, or other output-affecting
+configuration. Without it, the version/header are empty and results stay uncached.
+
 ### WordNet API server
 
 Definitions come from the WordNet API in https://github.com/sign/wn (the `wn` library plus a REST layer, with

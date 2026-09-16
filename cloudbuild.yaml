@@ -4,11 +4,13 @@
 steps:
   - name: gcr.io/cloud-builders/docker
     id: gpu
-    args: [build, -t, "${_IMAGE}:gpu", -t, "${_IMAGE}:gpu-${SHORT_SHA}", .]
+    args: [build, --build-arg, "MODEL_VERSION=${BUILD_ID}-gpu",
+           -t, "${_IMAGE}:gpu", -t, "${_IMAGE}:gpu-${SHORT_SHA}", .]
   - name: gcr.io/cloud-builders/docker
     id: cpu
     waitFor: ["-"]
     args: [build, --build-arg, TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu,
+           --build-arg, "MODEL_VERSION=${BUILD_ID}-cpu",
            -t, "${_IMAGE}:cpu", -t, "${_IMAGE}:cpu-${SHORT_SHA}", .]
 images:
   - "${_IMAGE}:gpu"

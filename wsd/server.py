@@ -27,6 +27,7 @@ logging.basicConfig(
 )
 
 templates = Jinja2Templates(directory=os.path.dirname(__file__))
+MODEL_VERSION = os.environ.get("MODEL_VERSION", "")
 
 
 async def exception_handler(request: Request, exc: Exception):
@@ -52,9 +53,9 @@ async def disambiguate_request(request: Request):
             "entities": result.entities,
             "synsets": result.synsets,
             "wordnet_url": WORDNET_URL,
-        })
+        }, headers={"X-Model-Tag": MODEL_VERSION})
     else:
-        return JSONResponse(asdict(result))
+        return JSONResponse(asdict(result), headers={"X-Model-Tag": MODEL_VERSION})
 
 
 async def index_request(request: Request):
@@ -68,8 +69,9 @@ async def health_check_request(request: Request):
         'status': 'healthy',
         'timestamp': datetime.now(tz=UTC).isoformat(),
         'service': 'wsd.server',
+        'version': MODEL_VERSION,
     }
-    return JSONResponse(body, status_code=200)
+    return JSONResponse(body, headers={"X-Model-Tag": MODEL_VERSION})
 
 
 routes = [
@@ -85,6 +87,7 @@ middlewares = [
         allow_origins=['*'],
         allow_methods=['*'],
         allow_headers=['*'],
+        expose_headers=['X-Model-Tag'],
     )
 ]
 

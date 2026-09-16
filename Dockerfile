@@ -61,6 +61,10 @@ COPY --chown=app:app wsd/ ./wsd/
 
 USER app
 
+# Identify this built pipeline for downstream caches (not the stale package version).
+ARG MODEL_VERSION
+ENV MODEL_VERSION=${MODEL_VERSION}
+
 # Command to run the application. exec makes uvicorn PID 1 so it receives
 # SIGTERM and can shut down gracefully (Cloud Run sends SIGTERM, then SIGKILL).
 # $PORT is provided by the runtime; Cloud Run sets it automatically.
