@@ -16,16 +16,11 @@ We expose a [web server](./wsd/server.py) that can be used to disambiguate words
 
 ### Response version
 
-`GET /health` includes `version`; successful responses (including JSON/HTML
-`/disambiguate`) advertise the same value in `X-Model-Tag`. Browser clients can
-read that header through CORS. Disambiguation response bodies are unchanged.
-
-`MODEL_VERSION` identifies the deployed pipeline for downstream caches. The
-GitHub and Cloud Build image jobs inject a unique build/CPU-or-GPU identifier.
-For manual builds pass `--build-arg MODEL_VERSION=...`; for local serving set
-the environment variable. Bump it when changing model weights, WordNet data,
-or other output-affecting runtime configuration. An unset/empty value produces
-`version: null` and no header, so unversioned development results stay uncached.
+`MODEL_VERSION` appears in `/health.version` and the `X-Model-Tag` header on
+health and disambiguation responses. Image publishing injects a unique build
+identifier; manual builds can pass `--build-arg MODEL_VERSION=...`.
+Change it when overriding model weights, WordNet data, or other output-affecting
+configuration. Without it, the version/header are empty and results stay uncached.
 
 ### WordNet API server
 
