@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
@@ -27,6 +28,14 @@ logging.basicConfig(
 )
 
 templates = Jinja2Templates(directory=os.path.dirname(__file__))
+MODEL_VERSION = os.environ.get("MODEL_VERSION") or None
+
+
+async def version_header(request: Request, call_next):
+    response = await call_next(request)
+    if MODEL_VERSION:
+        response.headers["X-Model-Tag"] = MODEL_VERSION
+    return response
 
 
 async def exception_handler(request: Request, exc: Exception):
@@ -68,6 +77,7 @@ async def health_check_request(request: Request):
         'status': 'healthy',
         'timestamp': datetime.now(tz=UTC).isoformat(),
         'service': 'wsd.server',
+        'version': MODEL_VERSION,
     }
     return JSONResponse(body, status_code=200)
 
@@ -79,12 +89,14 @@ routes = [
 ]
 
 middlewares = [
+    Middleware(BaseHTTPMiddleware, dispatch=version_header),
     Middleware(GZipMiddleware, minimum_size=1000, compresslevel=9),
     Middleware(
         CORSMiddleware,
         allow_origins=['*'],
         allow_methods=['*'],
         allow_headers=['*'],
+        expose_headers=['X-Model-Tag'],
     )
 ]
 
