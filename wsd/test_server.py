@@ -151,7 +151,13 @@ def test_e2e_disambiguate_endpoint(server):
     assert technology_token['end_char'] == 21
 
     assert technology_token['morph'] == {'Number': 'Sing'}
-    assert set(technology_token) == {'word', 'lemma', 'pos', 'position', 'start_char', 'end_char', 'morph'}
+    assert set(technology_token) == {
+        'word', 'lemma', 'pos', 'position', 'start_char', 'end_char', 'morph', 'dep', 'head', 'ent_type',
+    }
+    assert technology_token['dep'] == 'compound'
+    assert technology_token['head'] == 4
+    assert technology_token['ent_type'] == ''
+    assert result['sentences'] == [{'start_token': 0, 'end_token': 4}]
     for synset in result['synsets']:
         assert set(synset) == {'id', 'start_token', 'end_token', 'definition', 'confidence', 'expression'}
         assert 0 <= synset['start_token'] <= synset['end_token'] < len(result['tokens'])
