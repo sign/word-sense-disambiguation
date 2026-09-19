@@ -29,6 +29,7 @@ def _to_dict(result) -> dict:
         "tokens": [vars(t) for t in result.tokens],
         "entities": [vars(e) for e in result.entities],
         "synsets": [vars(s) for s in result.synsets],
+        "sentences": [vars(s) for s in result.sentences],
     }
 
 # Each rank is an independent single-GPU worker (spaCy's transformer and the

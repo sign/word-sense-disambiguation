@@ -142,9 +142,10 @@ def test_api_expression_span(president_doc, monkeypatch):
     response = TestClient(server.app).get("/disambiguate", params={"text": text, "lang": "en"})
     assert response.status_code == 200
     result = response.json()
-    assert set(result) == {"tokens", "entities", "synsets"}
+    assert set(result) == {"tokens", "entities", "synsets", "sentences"}
     for token in result["tokens"]:
-        assert set(token) == {"word", "lemma", "pos", "position", "start_char", "end_char", "morph"}
+        assert set(token) == {"word", "lemma", "pos", "position", "start_char", "end_char", "morph",
+                              "dep", "head", "ent_type"}
         assert token["morph"] == {}
         assert text[token["start_char"]:token["end_char"]] == token["word"]
     assert result["synsets"] == [{
