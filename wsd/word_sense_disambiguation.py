@@ -41,6 +41,16 @@ class DisambiguatedToken:
     start_char: int
     end_char: int
     morph: dict[str, str] = field(default_factory=dict)
+    dep: str = ""
+    head: int = -1
+    ent_type: str = ""
+
+
+@dataclass
+class Sentence:
+    """Inclusive, zero-based token boundaries from the spaCy parser."""
+    start_token: int
+    end_token: int
 
 
 @dataclass
@@ -84,6 +94,7 @@ class WordSenseDisambiguation:
     tokens: list[DisambiguatedToken]
     entities: list[Entity]
     synsets: list[Synset] = field(default_factory=list)
+    sentences: list[Sentence] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -100,6 +111,7 @@ class LightToken:
     dep_: str = ""
     head_i: int = -1  # index of the syntactic head (spaCy ``token.head.i``)
     morph: dict[str, str] = field(default_factory=dict)
+    ent_type_: str = ""
 
 
 @dataclass
@@ -108,6 +120,7 @@ class LightDoc:
     spaCy can run in another process and hand results to :func:`disambiguate_docs`."""
     tokens: list[LightToken]
     entities: list[Entity]
+    sentences: list[Sentence] = field(default_factory=list)
 
     def __iter__(self):
         return iter(self.tokens)
@@ -120,11 +133,20 @@ def light_doc(doc) -> LightDoc:
     return LightDoc(
         tokens=[
             LightToken(t.text, t.lemma_, t.pos_, t.i, t.idx, t.is_punct, t.is_space, t.whitespace_, t.dep_, t.head.i,
-                       t.morph.to_dict())
+                       t.morph.to_dict(), t.ent_type_)
             for t in doc
         ],
         entities=_extract_entities(doc),
+        sentences=_sentences(doc),
     )
+
+
+def _sentences(doc) -> list[Sentence]:
+    if isinstance(doc, LightDoc):
+        return doc.sentences
+    if not doc.has_annotation("SENT_START"):
+        return []  # Unparsed test documents must not invent sentence boundaries.
+    return [Sentence(s.start, s.end - 1) for s in doc.sents]
 
 
 def _fetch_definitions(queries: list[WordQuery]) -> list[list[Definition]] | None:
@@ -273,7 +295,9 @@ def _create_base_tokens(doc) -> tuple[list[DisambiguatedToken], list[int]]:
     """Output tokens for a doc, and the indices of the content words to disambiguate."""
     tokens = [DisambiguatedToken(word=t.text, lemma=t.lemma_.lower(), pos=t.pos_, position=t.i, start_char=t.idx,
                                  end_char=t.idx + len(t.text),
-                                 morph=dict(t.morph) if isinstance(t, LightToken) else t.morph.to_dict()) for t in doc]
+                                 morph=dict(t.morph) if isinstance(t, LightToken) else t.morph.to_dict(),
+                                 dep=t.dep_, head=t.head_i if isinstance(t, LightToken) else t.head.i,
+                                 ent_type=t.ent_type_) for t in doc]
     return tokens, [t.i for t in doc if _is_content(t)]
 
 
@@ -428,7 +452,7 @@ class PreparedBatch:
 def prepare_docs(docs: list, skip_single_sense: bool = False) -> PreparedBatch:
     """Phase 1 without the model: entities, WordNet lookups for expressions and words, model inputs."""
     per_doc = [_create_base_tokens(doc) for doc in docs]
-    results = [WordSenseDisambiguation(tokens=tokens, entities=_extract_entities(doc))
+    results = [WordSenseDisambiguation(tokens=tokens, entities=_extract_entities(doc), sentences=_sentences(doc))
                for doc, (tokens, _) in zip(docs, per_doc, strict=True)]
     batch, kept = _build_batch(docs, results, _units(docs, per_doc), skip_single_sense)
     return PreparedBatch(docs, results, batch, kept)

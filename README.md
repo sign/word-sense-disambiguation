@@ -90,7 +90,11 @@ model answers "none of the above" for the expression are its words disambiguated
 
 Both `/disambiguate` and batch JSON lines return three arrays:
 
-- `tokens`: `word`, `lemma`, `pos`, `position`, `start_char`, `end_char`, `morph`.
+- `tokens`: `word`, `lemma`, `pos`, `position`, `start_char`, `end_char`, `morph`, `dep`, `head`, `ent_type`.
+  `dep` is the spaCy dependency label, `head` is its document-level token index
+  (a `ROOT` points to itself), and `ent_type` is the raw NER label, or `""`.
+- `sentences`: inclusive `start_token` / `end_token` boundaries from spaCy, not punctuation splitting.
+  Dependencies and boundaries survive the offline multiprocessing path unchanged.
 - `entities`: `id`, `start_token`, `end_token`, `text`, `description`, `url`.
 - `synsets`: `id`, `start_token`, `end_token`, `definition`, `confidence`, `expression`.
 
