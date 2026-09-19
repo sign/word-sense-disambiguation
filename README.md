@@ -88,7 +88,7 @@ model answers "none of the above" for the expression are its words disambiguated
 
 ### Response format
 
-Both `/disambiguate` and batch JSON lines return three arrays:
+Both `/disambiguate` and batch JSON lines return four arrays:
 
 - `tokens`: `word`, `lemma`, `pos`, `position`, `start_char`, `end_char`, `morph`, `dep`, `head`, `ent_type`.
   `dep` is the spaCy dependency label, `head` is its document-level token index
@@ -98,7 +98,7 @@ Both `/disambiguate` and batch JSON lines return three arrays:
 - `entities`: `id`, `start_token`, `end_token`, `text`, `description`, `url`.
 - `synsets`: `id`, `start_token`, `end_token`, `definition`, `confidence`, `expression`.
 
-Entity and synset token indices are zero-based and **inclusive** at both ends. Character offsets are
+Entity, synset, and sentence token indices are zero-based and **inclusive** at both ends. Character offsets are
 zero-based with an exclusive `end_char`. Synsets are sorted by token position. A single-word sense has
 equal start/end indices and `expression: null`; a multiword sense includes its canonical WordNet form.
 Words with no definitions or a "none of the above" answer have no synset entry. Entity and synset spans
