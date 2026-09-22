@@ -124,7 +124,8 @@ jobs:
             docker buildx imagetools create --tag "$tag" --metadata-file /tmp/cpu-manifest.json \
               "$tag-amd64" "$tag-arm64"
           done <<< "$TAGS"
-          echo "digest=$(jq -r '."containerimage.digest"' /tmp/cpu-manifest.json)" >> "$GITHUB_OUTPUT"
+          digest=$(jq -er '."containerimage.descriptor".digest' /tmp/cpu-manifest.json)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
