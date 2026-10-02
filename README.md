@@ -90,9 +90,11 @@ model answers "none of the above" for the expression are its words disambiguated
 
 Both `/disambiguate` and batch JSON lines return four arrays:
 
-- `tokens`: `word`, `lemma`, `pos`, `position`, `start_char`, `end_char`, `morph`, `dep`, `head`, `ent_type`.
+- `tokens`: `word`, `lemma`, `pos`, `position`, `start_char`, `end_char`, `morph`, `dep`, `head`, `ent_type`, `ent_iob`.
   `dep` is the spaCy dependency label, `head` is its document-level token index
   (a `ROOT` points to itself), and `ent_type` is the raw NER label, or `""`.
+  `ent_iob` is spaCy's `B` (begin), `I` (inside), `O` (outside), or `""` when unannotated.
+  These boundaries distinguish adjacent dates without requiring a Wikidata link; they do not parse date values.
 - `sentences`: inclusive `start_token` / `end_token` boundaries from spaCy, not punctuation splitting.
   Dependencies and boundaries survive the offline multiprocessing path unchanged.
 - `entities`: `id`, `start_token`, `end_token`, `text`, `description`, `url`.
