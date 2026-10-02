@@ -152,7 +152,7 @@ def test_e2e_disambiguate_endpoint(server):
 
     assert technology_token['morph'] == {'Number': 'Sing'}
     assert set(technology_token) == {
-        'word', 'lemma', 'pos', 'position', 'start_char', 'end_char', 'morph', 'dep', 'head', 'ent_type',
+        'word', 'lemma', 'pos', 'position', 'start_char', 'end_char', 'morph', 'dep', 'head', 'ent_type', 'ent_iob',
     }
     assert technology_token['dep'] == 'compound'
     assert technology_token['head'] == 4

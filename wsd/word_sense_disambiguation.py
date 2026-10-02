@@ -44,6 +44,7 @@ class DisambiguatedToken:
     dep: str = ""
     head: int = -1
     ent_type: str = ""
+    ent_iob: str = ""  # spaCy B/I/O boundaries, independent of Wikidata linking.
 
 
 @dataclass
@@ -112,6 +113,7 @@ class LightToken:
     head_i: int = -1  # index of the syntactic head (spaCy ``token.head.i``)
     morph: dict[str, str] = field(default_factory=dict)
     ent_type_: str = ""
+    ent_iob_: str = ""
 
 
 @dataclass
@@ -133,7 +135,7 @@ def light_doc(doc) -> LightDoc:
     return LightDoc(
         tokens=[
             LightToken(t.text, t.lemma_, t.pos_, t.i, t.idx, t.is_punct, t.is_space, t.whitespace_, t.dep_, t.head.i,
-                       t.morph.to_dict(), t.ent_type_)
+                       t.morph.to_dict(), t.ent_type_, t.ent_iob_)
             for t in doc
         ],
         entities=_extract_entities(doc),
@@ -297,7 +299,7 @@ def _create_base_tokens(doc) -> tuple[list[DisambiguatedToken], list[int]]:
                                  end_char=t.idx + len(t.text),
                                  morph=dict(t.morph) if isinstance(t, LightToken) else t.morph.to_dict(),
                                  dep=t.dep_, head=t.head_i if isinstance(t, LightToken) else t.head.i,
-                                 ent_type=t.ent_type_) for t in doc]
+                                 ent_type=t.ent_type_, ent_iob=t.ent_iob_) for t in doc]
     return tokens, [t.i for t in doc if _is_content(t)]
 
 

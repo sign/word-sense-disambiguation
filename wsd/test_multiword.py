@@ -145,7 +145,7 @@ def test_api_expression_span(president_doc, monkeypatch):
     assert set(result) == {"tokens", "entities", "synsets", "sentences"}
     for token in result["tokens"]:
         assert set(token) == {"word", "lemma", "pos", "position", "start_char", "end_char", "morph",
-                              "dep", "head", "ent_type"}
+                              "dep", "head", "ent_type", "ent_iob"}
         assert token["morph"] == {}
         assert text[token["start_char"]:token["end_char"]] == token["word"]
     assert result["synsets"] == [{
