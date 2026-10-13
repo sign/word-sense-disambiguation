@@ -371,7 +371,7 @@ def _extract_entities(doc) -> list[Entity]:
 @dataclass
 class _Unit:
     """One thing to disambiguate: a WordNet multiword span or a single word (token range ``[start, end)``
-    of doc ``doc``). A span carries its ``words`` as fallback units, run when the compound reading is rejected."""
+    of doc ``doc``). A span carries its ``words`` as constituent units, disambiguated after the span."""
     doc: int
     start: int
     end: int
@@ -426,19 +426,15 @@ def _build_batch(
     return batch, kept
 
 
-def _apply_results(results, kept: list[_Unit], model_results) -> list[_Unit]:
-    """Record accepted synset spans and return rejected expressions for word-level fallback."""
-    rejected = []
+def _apply_results(results, kept: list[_Unit], model_results) -> None:
+    """Record accepted synset spans."""
     for u, result in zip(kept, model_results, strict=True):
         if result.definition == NONE_OF_THE_ABOVE:
-            if u.expression is not None:
-                rejected.append(u)
             continue
         results[u.doc].synsets.append(Synset(
             id=result.synset_id, start_token=u.start, end_token=u.end - 1,
             definition=result.definition, confidence=result.confidence, expression=u.expression,
         ))
-    return rejected
 
 
 @dataclass
@@ -449,6 +445,7 @@ class PreparedBatch:
     results: list[WordSenseDisambiguation]
     batch: list[DisambiguationInput]
     kept: list[_Unit]
+    expressions: list[_Unit]  # multiword spans, whose words phase 2 disambiguates
 
 
 def prepare_docs(docs: list, skip_single_sense: bool = False) -> PreparedBatch:
@@ -456,20 +453,22 @@ def prepare_docs(docs: list, skip_single_sense: bool = False) -> PreparedBatch:
     per_doc = [_create_base_tokens(doc) for doc in docs]
     results = [WordSenseDisambiguation(tokens=tokens, entities=_extract_entities(doc), sentences=_sentences(doc))
                for doc, (tokens, _) in zip(docs, per_doc, strict=True)]
-    batch, kept = _build_batch(docs, results, _units(docs, per_doc), skip_single_sense)
-    return PreparedBatch(docs, results, batch, kept)
+    units = _units(docs, per_doc)
+    batch, kept = _build_batch(docs, results, units, skip_single_sense)
+    return PreparedBatch(docs, results, batch, kept, [u for u in units if u.expression is not None])
 
 
 def complete_docs(
     prepared: PreparedBatch, model_results, skip_single_sense: bool = False,
 ) -> list[WordSenseDisambiguation]:
-    """Apply the phase-1 answers, then disambiguate the words of rejected expressions (phase 2)."""
-    rejected = _apply_results(prepared.results, prepared.kept, model_results)
-    words = [w for u in rejected for w in u.words]
+    """Apply the phase-1 answers, then disambiguate the words of every expression (phase 2)."""
+    _apply_results(prepared.results, prepared.kept, model_results)
+    words = [w for u in prepared.expressions for w in u.words]
     batch, kept = _build_batch(prepared.docs, prepared.results, words, skip_single_sense)
     _apply_results(prepared.results, kept, disambiguate_word_batch(batch))
     for result in prepared.results:
-        result.synsets.sort(key=lambda synset: synset.start_token)
+        # An expression precedes the senses of its own words, which the HTML view then skips.
+        result.synsets.sort(key=lambda synset: (synset.start_token, -synset.end_token))
     return prepared.results
 
 
@@ -478,9 +477,12 @@ def disambiguate_docs(docs: list, skip_single_sense: bool = False) -> list[WordS
     one model batch for all content words of all docs (the batch path).
 
     Multiword expressions that WordNet lists ("test tube", "give up") are
-    disambiguated as one unit first; their words are only disambiguated
-    separately (a second, small model batch) when the expression's answer is
-    "none of the above", i.e. when the compound reading does not apply.
+    disambiguated as one unit first; their words are then disambiguated
+    separately (a second, small model batch). Each accepted word sense spans
+    only its word, inside the expression's span, so consumers that keep the
+    widest span read the compound and can fall back to the words, e.g. when a
+    sign language has no sign for "go home" but has GO and HOME. When the
+    compound reading does not apply ("none of the above"), only the words remain.
 
     ``skip_single_sense`` assigns a word's (or expression's) only candidate sense
     directly (confidence 1.0) instead of asking the model whether it is "none of
