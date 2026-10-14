@@ -83,8 +83,9 @@ On AIDA-CoNLL test with Wikidata gold this scores F1 0.48 with the CPU pipeline 
 left to word sense disambiguation because the popularity prior links them badly.
 
 Multiword expressions that WordNet lists (`test tube`, `New York`, `give up`) are disambiguated as one unit
-first; each accepted expression produces one synset span. Only when the
-model answers "none of the above" for the expression are its words disambiguated individually.
+first; each accepted expression produces one synset span. Its words are then disambiguated individually too,
+so a consumer can fall back to them (e.g. a sign language with GO and HOME but no sign for `go home`).
+When the model answers "none of the above" for the expression, only the words' senses remain.
 
 ### Response format
 
@@ -101,7 +102,8 @@ Both `/disambiguate` and batch JSON lines return four arrays:
 - `synsets`: `id`, `start_token`, `end_token`, `definition`, `confidence`, `expression`.
 
 Entity, synset, and sentence token indices are zero-based and **inclusive** at both ends. Character offsets are
-zero-based with an exclusive `end_char`. Synsets are sorted by token position. A single-word sense has
+zero-based with an exclusive `end_char`. Synsets are sorted by token position, an expression before the
+senses of its own words, which lie inside its span. A single-word sense has
 equal start/end indices and `expression: null`; a multiword sense includes its canonical WordNet form.
 Words with no definitions or a "none of the above" answer have no synset entry. Entity and synset spans
 are independent and may overlap. Repeated occurrences of the same sense have separate spans.
@@ -112,7 +114,8 @@ It is `{}` when no features are available; multi-valued features retain spaCy's 
 These describe each original token, including tokens inside entity or synset spans, not the whole span.
 The API and batch output preserve the same features; they do not interpret them as target-language inflections.
 
-For example, the accepted expression in `She held a test tube.` appears once in `synsets`:
+For example, the accepted expression in `She held a test tube.` appears in `synsets` (followed by any
+senses of `test` and `tube`):
 
 ```json
 {
