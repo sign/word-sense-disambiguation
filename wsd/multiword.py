@@ -43,7 +43,7 @@ def _index() -> dict[str, dict[tuple[str, ...], str]]:
             tuple(re.findall(r"[^\s-]+|-", form.lower())),
         }
         for tokens in variants:
-            if 1 < len(tokens) <= MAX_TOKENS:
+            if 1 < len(tokens) <= MAX_TOKENS * 2 - 1 and sum(t != "-" for t in tokens) <= MAX_TOKENS:
                 index.setdefault(tokens[0], {}).setdefault(tokens, form)
     return index
 
@@ -58,7 +58,7 @@ def find_spans(doc) -> list[MultiwordSpan]:
     matches = []
     for i in range(len(tokens)):
         candidates = {**index.get(lemmas[i], {}), **index.get(lowers[i], {})}
-        for n in range(min(MAX_TOKENS, len(tokens) - i), 1, -1):
+        for n in range(min(MAX_TOKENS * 2 - 1, len(tokens) - i), 1, -1):
             form = candidates.get(tuple(lemmas[i:i + n])) or candidates.get(tuple(lowers[i:i + n]))
             if form:
                 head = _head(tokens[i:i + n], i, tokens)

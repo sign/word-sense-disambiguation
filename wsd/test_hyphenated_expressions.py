@@ -12,7 +12,8 @@ from wsd.word_sense_disambiguation import LightDoc, LightToken
 @pytest.fixture
 def expression_index(monkeypatch):
     monkeypatch.setattr(multiword.requests, "get", lambda *args, **kwargs: SimpleNamespace(
-        json=lambda: {"data": ["off-the-shelf", "pull off", "test tube"]}))
+        json=lambda: {"data": ["off-the-shelf", "pull off", "test tube", "state-of-the-art",
+                               "one-two-three-four-five", "one-two-three-four-five-six"]}))
     multiword._index.cache_clear()
     yield multiword._index()
     multiword._index.cache_clear()
@@ -54,6 +55,17 @@ def test_no_phrase_match_across_unrelated_punctuation(expression_index):
     doc = document([("off", "ADP", "ROOT", 0), (",", "PUNCT", "punct", 0),
                     ("the", "DET", "det", 3), ("shelf", "NOUN", "conj", 0)])
     assert multiword.find_spans(doc) == []
+
+
+@pytest.mark.parametrize("form", ["state-of-the-art", "one-two-three-four-five"])
+def test_dash_tokens_do_not_count_toward_word_limit(expression_index, form):
+    words = form.replace("-", " - ").split()
+    head = len(words) - 1
+    doc = document([(word, "PUNCT" if word == "-" else "ADJ",
+                     "ROOT" if i == head else "punct" if word == "-" else "amod", head)
+                    for i, word in enumerate(words)])
+    assert multiword.find_spans(doc) == [multiword.MultiwordSpan(0, len(words), form, head)]
+    assert ("one", "two", "three", "four", "five", "six") not in expression_index["one"]
 
 
 @pytest.mark.parametrize("accept", [True, False])
