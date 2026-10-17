@@ -43,6 +43,18 @@ conjunctions, auxiliaries, particles, and interjections. Their senses use the sa
 token-span response as content words. Punctuation, spaces, symbols, and unknown POS tags are not queried;
 words with no candidates or a model-rejected sense still have no synset.
 
+### Multiword candidates
+
+Canonical hyphenated forms such as `off-the-shelf` also match spaced prose
+(`off the shelf`) and spaCy's separate dash tokens. Original token coordinates
+are preserved, and definition lookup still uses the canonical WordNet spelling.
+Overlapping candidates are selected longest-first across starting positions, so
+`pull off` does not consume the beginning of the longer `off the shelf` candidate.
+If the parsed head POS has no definitions for a compound, other content POS are
+tried: `shelf` is a noun, but `off-the-shelf` has an adjectival sense. Existing
+parsed-POS senses keep priority. The model can reject the compound, and constituent
+word senses remain available; matching a spelling does not force an idiomatic reading.
+
 ### Running locally
 
 ```shell

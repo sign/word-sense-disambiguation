@@ -4,6 +4,7 @@ WordNet has ~64k multiword forms, 42% of its vocabulary and 94% nouns. Disambigu
 them as one unit gives the compound's own sense (issue #1) and saves prompts.
 """
 import logging
+import re
 from dataclasses import dataclass
 from functools import cache
 
@@ -34,9 +35,16 @@ def _index() -> dict[str, dict[tuple[str, ...], str]]:
         return {}
     index: dict[str, dict[tuple[str, ...], str]] = {}
     for form in forms:
-        tokens = tuple(form.lower().split())
-        if 1 < len(tokens) <= MAX_TOKENS:
-            index.setdefault(tokens[0], {})[tokens] = form
+        # WordNet keeps hyphens inside forms; prose and spaCy may use spaces
+        # or separate dash tokens. All spellings still query the canonical form.
+        variants = {
+            tuple(form.lower().split()),
+            tuple(re.split(r"[\s-]+", form.lower())),
+            tuple(re.findall(r"[^\s-]+|-", form.lower())),
+        }
+        for tokens in variants:
+            if 1 < len(tokens) <= MAX_TOKENS * 2 - 1 and sum(t != "-" for t in tokens) <= MAX_TOKENS:
+                index.setdefault(tokens[0], {}).setdefault(tokens, form)
     return index
 
 
@@ -47,28 +55,24 @@ def find_spans(doc) -> list[MultiwordSpan]:
     tokens = list(doc)
     lemmas = [t.lemma_.lower() for t in tokens]
     lowers = [t.text.lower() for t in tokens]
-    spans: list[MultiwordSpan] = []
-    i = 0
-    while i < len(tokens):
+    matches = []
+    for i in range(len(tokens)):
         candidates = {**index.get(lemmas[i], {}), **index.get(lowers[i], {})}
-        match = None
-        if candidates:
-            for n in range(min(MAX_TOKENS, len(tokens) - i), 1, -1):
-                form = candidates.get(tuple(lemmas[i:i + n])) or candidates.get(tuple(lowers[i:i + n]))
-                if form:
-                    match = (n, form)
-                    break
-        if match is None:
-            i += 1
-            continue
-        n, form = match
-        head = _head(tokens[i:i + n], i, tokens)
-        if head is None:
-            i += 1
-            continue
-        spans.append(MultiwordSpan(start=i, end=i + n, form=form, head=head))
-        i += n
-    return spans
+        for n in range(min(MAX_TOKENS * 2 - 1, len(tokens) - i), 1, -1):
+            form = candidates.get(tuple(lemmas[i:i + n])) or candidates.get(tuple(lowers[i:i + n]))
+            if form:
+                head = _head(tokens[i:i + n], i, tokens)
+                if head is not None:
+                    matches.append(MultiwordSpan(start=i, end=i + n, form=form, head=head))
+    # Compare lengths across starts: "pull off" must not consume the beginning
+    # of the longer "off the shelf" candidate before the model can judge it.
+    spans, covered = [], set()
+    for span in sorted(matches, key=lambda s: (s.start - s.end, s.start)):
+        positions = set(range(span.start, span.end))
+        if not covered.intersection(positions):
+            spans.append(span)
+            covered.update(positions)
+    return sorted(spans, key=lambda s: s.start)
 
 
 def _head_i(token) -> int:  # spaCy Token.head.i or LightToken.head_i

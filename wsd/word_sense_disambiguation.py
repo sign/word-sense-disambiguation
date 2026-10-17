@@ -380,6 +380,22 @@ class _Unit:
     words: list["_Unit"] = field(default_factory=list)
 
 
+def _span_definitions(queries: list[WordQuery]) -> list[list[Definition]]:
+    """A lexical compound can have a different POS from its last source token.
+
+    For example, off-the-shelf is an adjective even though shelf is a noun.
+    Keep the parsed POS first; only try other content POS when it has no senses.
+    """
+    definitions = get_definitions(queries)
+    fallback = [(i, WordQuery(query.form, pos))
+                for i, (query, defs) in enumerate(zip(queries, definitions, strict=True))
+                if not defs for pos in ("n", "v", "a", "r") if pos != query.pos]
+    for (i, _), extra in zip(fallback, get_definitions([q for _, q in fallback]), strict=True):
+        existing = {d.synset_id for d in definitions[i]}
+        definitions[i].extend(d for d in extra if d.synset_id not in existing)
+    return definitions
+
+
 def _units(docs, per_doc) -> list[_Unit]:
     """Phase-1 units for all docs, with every definition fetched in one lookup: each WordNet
     multiword span (its words attached as fallbacks) and each content word outside a span.
@@ -400,7 +416,7 @@ def _units(docs, per_doc) -> list[_Unit]:
         for i in content_idx:
             word_tokens.append(doc[i])
             word_slots.append((d, i, owner[i].words if i in owner else units))
-    for unit, defs in zip(span_units, get_definitions(span_queries), strict=True):
+    for unit, defs in zip(span_units, _span_definitions(span_queries), strict=True):
         unit.definitions = defs
     for (d, i, target), defs in zip(word_slots, _word_definitions(word_tokens), strict=True):
         if defs:
