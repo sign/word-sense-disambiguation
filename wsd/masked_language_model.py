@@ -103,6 +103,14 @@ _SLICE_SIZE = 8192
 _NUM_STREAMS = 4
 
 
+@cache
+def _streams() -> list[torch.cuda.Stream]:
+    """Created once per process: ``torch.cuda.Stream()`` hands out the pool's 32 streams round-robin, and every
+    stream a process touches keeps its own caching-allocator blocks and cuBLAS workspace for good, so fresh
+    streams per call made every process hold memory for all 32 instead of ``_NUM_STREAMS``."""
+    return [torch.cuda.Stream() for _ in range(_NUM_STREAMS)]
+
+
 def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     """
     Batch version of unmask_token that processes multiple texts in parallel.
@@ -123,7 +131,7 @@ def unmask_token_batch(texts: list[str]) -> list[UnmaskResult]:
     components = load_model()
     tokenizer = components.tokenizer
     cuda = components.device == "cuda"
-    streams = [torch.cuda.Stream() for _ in range(_NUM_STREAMS)] if cuda else []
+    streams = _streams() if cuda else []
 
     results: list[UnmaskResult | None] = [None] * len(texts)
     pending: list[tuple[list[int], torch.Tensor, torch.cuda.Stream]] = []
