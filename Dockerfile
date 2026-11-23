@@ -1,5 +1,6 @@
 # Stage 1: install dependencies and download models.
 FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/opt/hf-cache
@@ -45,6 +46,7 @@ RUN python -m wsd.prime
 
 # Stage 2: runtime image carrying only the venv, model caches, and app code.
 FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \
     LOG_LEVEL=INFO \
@@ -59,6 +61,8 @@ COPY --from=builder --chown=app:app /opt/hf-cache /opt/hf-cache
 
 WORKDIR /app
 COPY --chown=app:app wsd/ ./wsd/
+
+RUN rm -rf /usr/local/lib/python*/ensurepip /usr/local/lib/python*/site-packages/pip /usr/local/lib/python*/site-packages/pip-*.dist-info /opt/venv/lib/python*/site-packages/pip /opt/venv/lib/python*/site-packages/pip-*.dist-info
 
 USER app
 
