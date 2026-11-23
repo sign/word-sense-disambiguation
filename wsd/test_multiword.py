@@ -148,7 +148,9 @@ def test_api_expression_span(president_doc, monkeypatch):
 
     text, doc = president_doc
     monkeypatch.setattr(server, "disambiguate", lambda text, language: disambiguate_docs([doc])[0])
-    response = TestClient(server.app).get("/disambiguate", params={"text": text, "lang": "en"})
+    monkeypatch.setenv("WSD_WARMUP", "0")
+    with TestClient(server.app) as client:
+        response = client.get("/disambiguate", params={"text": text, "lang": "en"})
     assert response.status_code == 200
     result = response.json()
     assert set(result) == {"tokens", "entities", "synsets", "sentences"}
@@ -186,7 +188,9 @@ def test_html_expression_span(president_doc, monkeypatch):
 
     text, doc = president_doc
     monkeypatch.setattr(server, "disambiguate", lambda text, language: disambiguate_docs([doc])[0])
-    response = TestClient(server.app).get("/disambiguate", params={"text": text, "lang": "en", "output": "html"})
+    monkeypatch.setenv("WSD_WARMUP", "0")
+    with TestClient(server.app) as client:
+        response = client.get("/disambiguate", params={"text": text, "lang": "en", "output": "html"})
     assert response.status_code == 200
     assert response.text.count("the person who holds the office of head of state") == 1
     parser = TableParser()
