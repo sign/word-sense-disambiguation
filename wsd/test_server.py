@@ -209,3 +209,37 @@ def test_oversized_text_is_rejected_before_inference(monkeypatch):
     response = TestClient(module.app).get('/disambiguate', params={'text': 'a' * 4097, 'lang': 'en'})
     assert response.status_code == 413
     inference.assert_not_called()
+
+
+def test_inference_is_serialized_on_the_warmup_thread(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from starlette.testclient import TestClient
+
+    from wsd import server as module
+    from wsd.word_sense_disambiguation import WordSenseDisambiguation
+
+    threads = []
+    active = 0
+    maximum_active = 0
+
+    def inference(text, language="en"):
+        nonlocal active, maximum_active
+        threads.append(threading.get_ident())
+        active += 1
+        maximum_active = max(maximum_active, active)
+        time.sleep(0.01)
+        active -= 1
+        return WordSenseDisambiguation(tokens=[], entities=[])
+
+    monkeypatch.setattr(module, "disambiguate", inference)
+    monkeypatch.setenv("WSD_WARMUP", "1")
+    with TestClient(module.app) as client, ThreadPoolExecutor(max_workers=4) as callers:
+        responses = list(callers.map(
+            lambda _: client.get("/disambiguate", params={"text": "bank", "lang": "en"}), range(8),
+        ))
+    assert all(response.status_code == 200 for response in responses)
+    assert len(threads) == 9
+    assert len(set(threads)) == 1
+    assert maximum_active == 1

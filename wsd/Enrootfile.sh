@@ -12,11 +12,11 @@ trap cleanup EXIT INT TERM
 enroot create -n "$NAME" "$BASE"
 enroot start --root --rw "$NAME" bash -c '
   set -Eeuo pipefail
-  apt-get update -qq && apt-get install -y -qq gcc git && rm -rf /var/lib/apt/lists/*  # gcc: triton (torch.compile); git: clone the API
+  apt-get update -qq && apt-get install -y -qq gcc git python3-pip && rm -rf /var/lib/apt/lists/*  # gcc: triton (torch.compile); git: clone the API
   # WordNet API, built like https://github.com/sign/wn/blob/main/Dockerfile (ghcr.io/sign/wn), so jobs can
   # start it locally when WORDNET_URL is unset (see wsd/env.py).
   git clone --depth 1 https://github.com/sign/wn /opt/wn
-  /opt/venv/bin/pip install --no-cache-dir "/opt/wn[web]" uvicorn
+  /usr/bin/python3 -m pip --python /opt/venv/bin/python install --no-cache-dir "/opt/wn[web]" uvicorn
   /opt/venv/bin/python -m wn download omw:1.4 cili
   /opt/venv/bin/python /opt/wn/extensions/wikidata-lexemes/merge_extension.py /opt/wn/extensions/wikidata-lexemes/output/*.xml
   /opt/venv/bin/python -c "from wn._db import connect; c = connect(); c.execute(\"ANALYZE\")"
