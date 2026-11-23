@@ -200,7 +200,9 @@ if __name__ == "__main__":
 
 def test_oversized_text_is_rejected_before_inference(monkeypatch):
     from unittest.mock import Mock
+
     from starlette.testclient import TestClient
+
     from wsd import server as module
     inference = Mock()
     monkeypatch.setattr(module, 'disambiguate', inference)
