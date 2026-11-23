@@ -2,7 +2,7 @@
 name = "wsd"
 description = "Packages for understaning word senses and entities from text (word sense disambiguation & entity linking)"
 version = "0.0.1"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Amit Moryossef", email = "amit@sign.mt" },
 ]
