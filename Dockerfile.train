@@ -1,7 +1,7 @@
 # Extends the serve image with the training pipeline.
 #   Build the base first:   docker build -t wsd .
 #   Build training on top:  docker build -f Dockerfile.train -t wsd-train .
-FROM wsd
+FROM wsd AS builder
 USER root
 COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
 ENV WN_DATA_DIR=/opt/wn-data
@@ -15,6 +15,13 @@ ENV WANDB_DISABLED=true \
 RUN uv pip install --python /opt/venv/bin/python --no-cache "wn==1.1.0" \
     && python -c "import wn; wn.download('omw-en:1.4')" \
     && chown -R app:app /opt/wn-data
+
+FROM wsd AS runtime
+USER root
+RUN rm -rf /opt/venv
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder --chown=app:app /opt/wn-data /opt/wn-data
+ENV WN_DATA_DIR=/opt/wn-data WANDB_DISABLED=true WANDB_MODE=disabled
 
 USER app
 
