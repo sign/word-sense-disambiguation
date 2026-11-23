@@ -5,6 +5,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
@@ -32,7 +33,7 @@ MODEL_VERSION = os.environ.get("MODEL_VERSION", "")
 
 async def exception_handler(request: Request, exc: Exception):
     status = exc.status_code if isinstance(exc, HTTPException) else 500
-    message = exc.detail if isinstance(exc, HTTPException) else str(exc)
+    message = exc.detail if isinstance(exc, HTTPException) else "Internal server error"
     body = {"error": {"status": status, "message": message, "type": type(exc).__name__}}
     return JSONResponse(body, status_code=status)
 
@@ -44,7 +45,9 @@ async def disambiguate_request(request: Request):
     if "lang" not in params:
         raise HTTPException(status_code=400, detail="Missing 'lang' query parameter")
 
-    result = disambiguate(text=params["text"], language=params["lang"])
+    if len(params["text"]) > 4096:
+        raise HTTPException(status_code=413, detail="Text exceeds 4096 characters")
+    result = await run_in_threadpool(disambiguate, text=params["text"], language=params["lang"])
 
     # Check if HTML output is requested
     if params.get("output") == "html":

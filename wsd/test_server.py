@@ -196,3 +196,14 @@ def test_e2e_disambiguate_missing_params(server):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_oversized_text_is_rejected_before_inference(monkeypatch):
+    from unittest.mock import Mock
+    from starlette.testclient import TestClient
+    from wsd import server as module
+    inference = Mock()
+    monkeypatch.setattr(module, 'disambiguate', inference)
+    response = TestClient(module.app).get('/disambiguate', params={'text': 'a' * 4097, 'lang': 'en'})
+    assert response.status_code == 413
+    inference.assert_not_called()
