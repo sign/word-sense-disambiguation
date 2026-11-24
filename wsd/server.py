@@ -31,6 +31,7 @@ logging.basicConfig(
 
 templates = Jinja2Templates(directory=os.path.dirname(__file__))
 MODEL_VERSION = os.environ.get("MODEL_VERSION", "")
+MAX_TEXT_CHARS = 4096
 
 
 async def exception_handler(request: Request, exc: Exception):
@@ -47,8 +48,8 @@ async def disambiguate_request(request: Request):
     if "lang" not in params:
         raise HTTPException(status_code=400, detail="Missing 'lang' query parameter")
 
-    if len(params["text"]) > 4096:
-        raise HTTPException(status_code=413, detail="Text exceeds 4096 characters")
+    if len(params["text"]) > MAX_TEXT_CHARS:
+        raise HTTPException(status_code=413, detail=f"Text exceeds {MAX_TEXT_CHARS} characters")
     result = await asyncio.get_running_loop().run_in_executor(
         request.app.state.inference_executor,
         partial(disambiguate, text=params["text"], language=params["lang"]),
