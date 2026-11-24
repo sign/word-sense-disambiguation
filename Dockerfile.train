@@ -1,7 +1,10 @@
 # Extends the serve image with the training pipeline.
 #   Build the base first:   docker build -t wsd .
 #   Build training on top:  docker build -f Dockerfile.train -t wsd-train .
-FROM wsd
+FROM wsd AS builder
+USER root
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
+ENV WN_DATA_DIR=/opt/wn-data PYTHONPATH=/opt/training-deps
 
 ENV WANDB_DISABLED=true \
     WANDB_MODE=disabled
@@ -9,8 +12,17 @@ ENV WANDB_DISABLED=true \
 # Training-time eval loads WordNet via the wn library. Not needed at serving
 # time, so keep it in the training layer. Bake the OMW lexicon into the image
 # so training doesn't need network access on first run.
-RUN pip install --no-cache-dir "wn==1.1.0" \
-    && python -c "import wn; wn.download('omw-en:1.4')"
+RUN uv pip install --python /opt/venv/bin/python --target /opt/training-deps --no-cache "wn==1.1.0" \
+    && python -c "import wn; wn.download('omw-en:1.4')" \
+    && chown -R app:app /opt/wn-data
+
+FROM wsd AS runtime
+USER root
+COPY --from=builder /opt/training-deps /opt/training-deps
+COPY --from=builder --chown=app:app /opt/wn-data /opt/wn-data
+ENV WN_DATA_DIR=/opt/wn-data PYTHONPATH=/opt/training-deps WANDB_DISABLED=true WANDB_MODE=disabled
+
+USER app
 
 # Bring in the training script and data loader (not present in the base image).
 COPY training/ ./training/

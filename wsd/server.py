@@ -1,8 +1,11 @@
+import asyncio
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
+from functools import partial
 
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
@@ -28,11 +31,12 @@ logging.basicConfig(
 
 templates = Jinja2Templates(directory=os.path.dirname(__file__))
 MODEL_VERSION = os.environ.get("MODEL_VERSION", "")
+MAX_TEXT_CHARS = 4096
 
 
 async def exception_handler(request: Request, exc: Exception):
     status = exc.status_code if isinstance(exc, HTTPException) else 500
-    message = exc.detail if isinstance(exc, HTTPException) else str(exc)
+    message = exc.detail if isinstance(exc, HTTPException) else "Internal server error"
     body = {"error": {"status": status, "message": message, "type": type(exc).__name__}}
     return JSONResponse(body, status_code=status)
 
@@ -44,7 +48,12 @@ async def disambiguate_request(request: Request):
     if "lang" not in params:
         raise HTTPException(status_code=400, detail="Missing 'lang' query parameter")
 
-    result = disambiguate(text=params["text"], language=params["lang"])
+    if len(params["text"]) > MAX_TEXT_CHARS:
+        raise HTTPException(status_code=413, detail=f"Text exceeds {MAX_TEXT_CHARS} characters")
+    result = await asyncio.get_running_loop().run_in_executor(
+        request.app.state.inference_executor,
+        partial(disambiguate, text=params["text"], language=params["lang"]),
+    )
 
     # Check if HTML output is requested
     if params.get("output") == "html":
@@ -95,10 +104,14 @@ middlewares = [
 async def lifespan(app: Starlette):
     """Load spaCy and the WSD model before serving (Cloud Run routes traffic only once the port
     is open, so this costs start-up time, not request latency). WSD_WARMUP=0 skips it for tests."""
-    if os.environ.get("WSD_WARMUP", "1") != "0":
-        logging.getLogger(__name__).info("Warming up the pipeline...")
-        disambiguate("bank")
-    yield
+    # spaCy/model caches are shared, and the entity linker's SQLite connection
+    # must be initialized and used on the same thread.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        app.state.inference_executor = executor
+        if os.environ.get("WSD_WARMUP", "1") != "0":
+            logging.getLogger(__name__).info("Warming up the pipeline...")
+            await asyncio.get_running_loop().run_in_executor(executor, partial(disambiguate, "bank"))
+        yield
 
 
 app = Starlette(routes=routes, middleware=middlewares, lifespan=lifespan,

@@ -2,7 +2,7 @@
 name = "wsd"
 description = "Packages for understaning word senses and entities from text (word sense disambiguation & entity linking)"
 version = "0.0.1"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Amit Moryossef", email = "amit@sign.mt" },
 ]
@@ -11,7 +11,7 @@ dependencies = [
     "torch",
     "numpy",
     "transformers",
-    "requests",
+    "requests>=2.34.2",
     "spacy",
     "spacy-entity-linker",
     "en_core_web_lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl",
@@ -19,7 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "httpx", # Starlette TestClient
+    "httpx>=0.28.1", # Starlette TestClient
     "ruff",
     "requests-mock",
     "pytest",
@@ -27,8 +27,8 @@ dev = [
 ]
 
 web = [
-    "uvicorn",
-    "starlette",
+    "uvicorn>=0.54.0",
+    "starlette>=1.10.0",
     "jinja2",
 ]
 

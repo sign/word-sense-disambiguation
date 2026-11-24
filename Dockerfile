@@ -1,5 +1,6 @@
 # Stage 1: install dependencies and download models.
-FROM python:3.12-slim AS builder
+FROM python:3.15.2-slim-trixie AS builder
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/opt/hf-cache
@@ -19,8 +20,8 @@ RUN mkdir wsd && touch wsd/__init__.py && touch /app/README.md
 # (en_core_web_lg) runs on the CPU either way. Bytecode caches and package tests are dropped.
 ARG TORCH_INDEX_URL=""
 RUN if [ -n "$TORCH_INDEX_URL" ]; then pip install --no-cache-dir torch --index-url "$TORCH_INDEX_URL"; fi \
-    && pip install --no-cache-dir ".[web]" && find /opt/venv -name "__pycache__" -type d -exec rm -rf {} + \
-    && find /opt/venv -name "*.pyc" -delete && rm -rf /opt/venv/lib/python3.12/site-packages/*/tests
+    && pip install --no-cache-dir --upgrade --upgrade-strategy eager ".[web]" && find /opt/venv -name "__pycache__" -type d -exec rm -rf {} + \
+    && find /opt/venv -name "*.pyc" -delete && rm -rf /opt/venv/lib/python3.15/site-packages/*/tests
 
 # Download the models before the code copy, so these heavy layers (and the
 # venv layer, which the spaCy entity-linker KB is written into) stay identical
@@ -41,9 +42,12 @@ COPY wsd/ ./wsd/
 # Everything is already downloaded, so this is a fast end-to-end check that
 # the model and pipeline actually run.
 RUN python -m wsd.prime
+# The CPU wheel index can carry older bundled build helpers.
+RUN pip install --no-cache-dir --upgrade setuptools wheel
 
 # Stage 2: runtime image carrying only the venv, model caches, and app code.
-FROM python:3.12-slim
+FROM python:3.15.2-slim-trixie
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \
     LOG_LEVEL=INFO \
@@ -58,6 +62,8 @@ COPY --from=builder --chown=app:app /opt/hf-cache /opt/hf-cache
 
 WORKDIR /app
 COPY --chown=app:app wsd/ ./wsd/
+
+RUN rm -rf /usr/local/lib/python*/ensurepip /usr/local/lib/python*/site-packages/pip /usr/local/lib/python*/site-packages/pip-*.dist-info /opt/venv/lib/python*/site-packages/pip /opt/venv/lib/python*/site-packages/pip-*.dist-info
 
 USER app
 
